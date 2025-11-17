@@ -7,6 +7,8 @@ use iced::Border;
 use iced::Element;
 use iced::Length;
 use iced::Length::Fill;
+use iced::Length::FillPortion;
+use iced::Length::Shrink;
 use iced::Pixels;
 use iced::Subscription;
 use iced::Task;
@@ -31,7 +33,9 @@ use iced::widget::pane_grid::TitleBar;
 use iced::widget::row;
 use iced::widget::rule;
 use iced::widget::scrollable;
+use iced::widget::span;
 use iced::widget::text;
+use iced::widget::text_input;
 use iced::window;
 use iced::window::Id;
 use iced::window::Settings;
@@ -42,11 +46,13 @@ use iced_aw::style::colors::WHITE;
 enum Message {
     None,
     Debug(String),
+    OpenLink(String),
     OpenWindow(Subwindow),
     CloseWindow(Subwindow),
     CloseWinById(Id),
     ChangeScreen(Screen),
     NewProj,
+    NewProjEvent(NewProjEvent),
     CloseProj,
     PaneResized(pane_grid::ResizeEvent),
     PaneSwap(pane_grid::DragEvent),
@@ -58,10 +64,15 @@ enum Screen {
     Home,
     Project,
 }
+#[derive(Debug, Clone)]
+enum NewProjEvent {
+    NameChange(String),
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum Subwindow {
     Main,
+    NewProject,
     ProjectSettings,
     ProgramSettings,
 }
@@ -79,6 +90,7 @@ struct State {
     screen: Screen,
     panes: pane_grid::State<Pane>,
     project: Option<Project>,
+    new_proj_state: NewProjState,
 }
 
 impl Default for State {
@@ -97,12 +109,20 @@ impl Default for State {
             panes: flist.0,
             project: None,
             screen: Screen::Home,
+            new_proj_state: NewProjState::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct Project;
+#[derive(Debug, Clone)]
+struct Project {
+    name: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct NewProjState {
+    name: String,
+}
 
 pub fn main() -> iced::Result {
     iced::daemon("TagMaster", update, view)
@@ -111,19 +131,17 @@ pub fn main() -> iced::Result {
         .run_with(|| {
             (
                 State::default(),
-                Task::done(Message::OpenWindow(Subwindow::Main)),
+                Task::done(Message::OpenWindow(Subwindow::Main)), //TODO startup function/message
             )
         })
 }
 
 fn subscription(state: &State) -> Subscription<Message> {
-    window::events().map(|(id, ev)| {
-        match ev {
-            window::Event::Closed => Message::CloseWinById(id),
+    window::events().map(|(id, ev)| match ev {
+        window::Event::Closed => Message::CloseWinById(id),
 
-            window::Event::CloseRequested => Message::CloseWinById(id),
-            _ => Message::None,
-        }
+        window::Event::CloseRequested => Message::CloseWinById(id),
+        _ => Message::None,
     })
 }
 
@@ -135,6 +153,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::None => Task::none(),
         Message::Debug(s) => {
+            eprintln!("{s}");
             Task::none()
         }
         Message::ChangeScreen(screen) => {
@@ -149,7 +168,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let window = match sw {
                 Subwindow::Main => {
                     if state.windows.iter().find(|x| x.1 == sw).is_none() {
-                        let window = window::open(Settings::default());
+                        let window = window::open(Settings {
+                            level: window::Level::AlwaysOnBottom,
+
+                            ..Default::default()
+                        });
                         state.windows.push((window.0, sw));
                         window.1
                     } else {
@@ -163,6 +186,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 width: 300.0,
                                 height: 500.0,
                             },
+                            level: window::Level::AlwaysOnTop,
                             ..Default::default()
                         });
                         state.windows.push((window.0, sw));
@@ -178,6 +202,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 width: 300.0,
                                 height: 500.0,
                             },
+                            level: window::Level::AlwaysOnTop,
+                            ..Default::default()
+                        });
+                        state.windows.push((window.0, sw));
+                        window.1
+                    } else {
+                        Task::none()
+                    }
+                }
+                Subwindow::NewProject => {
+                    if state.windows.iter().find(|x| x.1 == sw).is_none() {
+                        let window = window::open(Settings {
+                            size: iced::Size {
+                                width: 600.0,
+                                height: 400.0,
+                            },
+                            level: window::Level::AlwaysOnTop,
                             ..Default::default()
                         });
                         state.windows.push((window.0, sw));
@@ -187,27 +228,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
             };
-            window.map(|x| Message::Debug(format!("{:?}", x)))
+            window.map(|x| Message::None)
         }
-
         Message::CloseWindow(sw) => {
             let old_windows = state.windows.clone();
             if let Some(id) = old_windows.iter().find(|x| x.1 == sw) {
                 if id.1 == Subwindow::Main {
-                    update(state, Message::CloseProj);
-                    window::close(id.0).chain(iced::exit())
+                    update(state, Message::CloseProj).chain(window::close(id.0).chain(iced::exit()))
                 } else {
-                    let window = window::close(id.0);
                     state.windows.retain(|w| w.1 != id.1);
+                    let window = window::close(id.0);
                     window
                 }
             } else {
                 Task::none()
             }
         }
-
         Message::CloseWinById(id) => {
-            if Some(Subwindow::Main) == state.windows.iter().find(|x| x.0 == id).map(|x|x.1) {
+            if Some(Subwindow::Main) == state.windows.iter().find(|x| x.0 == id).map(|x| x.1) {
                 update(state, Message::CloseProj);
                 window::close(id).chain(iced::exit())
             } else {
@@ -222,10 +260,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::NewProj => {
-            update(state, Message::CloseProj);
-            state.project = Some(Project);
+            let go = update(state, Message::CloseProj)
+                .chain(update(state, Message::CloseWindow(Subwindow::NewProject)));
+            state.project = Some(Project {
+                name: state.new_proj_state.name.clone(),
+            });
+            state.new_proj_state = NewProjState::default();
             state.screen = Screen::Project;
-            Task::none()
+            go
         }
         Message::PaneResized(resize_event) => {
             state.panes.resize(resize_event.split, resize_event.ratio);
@@ -236,6 +278,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::PaneSwap(_) => Task::none(),
+        Message::OpenLink(s) => {
+            let _ = webbrowser::open(&s);
+            Task::none()
+        }
+        Message::NewProjEvent(new_proj_event) => {
+            handle_new_proj_ev(&mut state.new_proj_state, new_proj_event)
+        }
+    }
+}
+
+fn handle_new_proj_ev(state: &mut NewProjState, ev: NewProjEvent) -> Task<Message> {
+    match ev {
+        NewProjEvent::NameChange(n) => {
+            state.name = n;
+            Task::none()
+        }
     }
 }
 
@@ -245,9 +303,14 @@ fn view(state: &State, window_id: window::Id) -> Element<Message> {
             Subwindow::Main => main_window(state),
             Subwindow::ProjectSettings => project_settings(state),
             Subwindow::ProgramSettings => program_settings(state),
+            Subwindow::NewProject => new_project_view(&state.new_proj_state),
         }
     } else {
-        "no render".into()
+        text(format!(
+            "ERROR\nNo Render on this Window\nID: {window_id}\nCurrent Windows: {:?}",
+            state.windows
+        ))
+        .into()
     }
 }
 
@@ -296,6 +359,14 @@ fn main_window(state: &State) -> Element<Message> {
         )
         .spacing(10),
         Space::new(Fill, 0),
+        text(
+            state
+                .project
+                .as_ref()
+                .map(|x| x.name.as_str())
+                .unwrap_or("")
+        ),
+        Space::new(Fill, 0),
         row((0..=(if state.project.is_some() { 1 } else { 0 }))
             .rev()
             .map(|i| {
@@ -305,7 +376,7 @@ fn main_window(state: &State) -> Element<Message> {
                         .into()
                 } else {
                     widget::button("Project options")
-                        .on_press(Message::Debug("projopt".to_string()))
+                        .on_press(Message::OpenWindow(Subwindow::ProjectSettings))
                         .into()
                 }
             }),)
@@ -315,10 +386,98 @@ fn main_window(state: &State) -> Element<Message> {
     .align_y(Center);
 
     let body = match state.screen {
-        Screen::Home => container(column![
-            "Welcome to TagMaster",
-            button("New Project").on_press(Message::NewProj)
-        ])
+        Screen::Home => container(
+            column![
+                text("TagMaster").size(80).height(FillPortion(2)),
+                widget::rich_text([
+                    span("A project by "),
+                    span("GenEq UC Berkeley")
+                        .link(Message::OpenLink(
+                            "https://cejce.berkeley.edu/geneq".to_string()
+                        ))
+                        .underline(true)
+                ])
+                .height(FillPortion(1)),
+                row![
+                    container("New Project")
+                    .align_x(Center)
+                    .width(FillPortion(2)),
+                    container("Recent Projects")
+                        .width(FillPortion(2))
+                        .align_x(Center)
+                ],
+                row![
+                    container(
+                        column![
+                            button("Create Project...")
+                                .on_press(Message::OpenWindow(Subwindow::NewProject)),
+                        ]
+                        .align_x(Center)
+                        .align_x(Center)
+                    )
+                    .height(Fill)
+                    .align_x(Center)
+                    .align_y(Center)
+                    .style(|theme: &Theme| {
+                        let palette = theme.extended_palette();
+
+                        container::Style {
+                            border: Border {
+                                color: palette.background.strong.color,
+                                width: 2.0,
+                                radius: Radius::new(0),
+                            },
+                            ..Default::default()
+                        }
+                    })
+                    .width(FillPortion(2)),
+                    container(scrollable(
+                        column![
+                            //TODO project files
+                        ]
+                        .align_x(Center)
+                        .spacing(10)
+                        .padding(10)
+                        .width(Fill)
+                    ))
+                    .width(FillPortion(2))
+                    .height(Fill)
+                    .align_x(Center)
+                    .style(|theme: &Theme| {
+                        let palette = theme.extended_palette();
+
+                        container::Style {
+                            border: Border {
+                                color: palette.background.strong.color,
+                                width: 2.0,
+                                radius: Radius::new(0),
+                            },
+                            ..Default::default()
+                        }
+                    })
+                ]
+                .height(FillPortion(5)),
+                widget::rich_text([
+                    span("This software is licenced under the "),
+                    span("GNU General Public Licence v.3")
+                        .link(Message::OpenLink(
+                            "https://www.gnu.org/licenses/gpl-3.0.en.html#license-text".to_string()
+                        ))
+                        .underline(true),
+                    span("\nSource code is available on "),
+                    span("GitHub")
+                        .link(Message::OpenLink(
+                            "https://github.com/Sycration/TagMaster/tree/main".to_string()
+                        ))
+                        .underline(true)
+                ])
+                .height(FillPortion(1))
+                .align_x(Center),
+            ]
+            .align_x(Center)
+            .padding(30)
+            .spacing(30),
+        )
         .center_x(Length::Fill),
         Screen::Project => container(
             pane_grid(&state.panes, |pane, state, _| {
@@ -366,6 +525,28 @@ fn main_window(state: &State) -> Element<Message> {
     widget::container(widget::column![top_bar, horizontal_rule(2), body].spacing(10))
         .padding(10)
         .into()
+}
+
+fn new_project_view(state: &NewProjState) -> Element<Message> {
+    column![
+        "Create a new project",
+        text_input("Project Name", &state.name)
+            .on_input(|s| Message::NewProjEvent(NewProjEvent::NameChange(s))),
+        row![
+            button("Create")
+                .style(button::primary)
+                .on_press(Message::NewProj),
+            Space::new(Fill, 0),
+            button("Cancel")
+                .style(button::secondary)
+                .on_press(Message::CloseWindow(Subwindow::NewProject)),
+        ]
+        .padding(40)
+    ]
+    .align_x(Center)
+    .padding(40)
+    .spacing(25)
+    .into()
 }
 
 fn program_settings(state: &State) -> Element<Message> {
