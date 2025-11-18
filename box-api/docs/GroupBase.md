@@ -1,0 +1,12 @@
+# GroupBase
+
+## Properties
+
+Name | Type | Description | Notes
+------------ | ------------- | ------------- | -------------
+**id** | **String** | The unique identifier for this object. | 
+**r#type** | **String** | The value will always be `group`. | 
+
+[[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
+
+
