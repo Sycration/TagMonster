@@ -44,6 +44,7 @@ pub(crate) fn new_project(state: &mut State, project: Project) -> Task<Message> 
             state,
             Message::HomepageMessage(homepage::HomepageMessage::AddProject(project.clone())),
         ),
+        update(state, Message::FileTreeMessage(file_tree::FileTreeMessage::InitFolder(project.top_folder_id))),
         Task::perform(
             {
                 let project = project.clone();
@@ -65,10 +66,11 @@ pub(crate) fn new_project(state: &mut State, project: Project) -> Task<Message> 
 
 pub(crate) fn open_project(state: &mut State, project: Project) -> Task<Message> {
     let name = project.name.clone();
-
+    let id = project.top_folder_id;
     state.project = Some(project);
     state.screen = Screen::Project;
-    update(state, Message::Debug(format!("Loaded project \"{name}\"")))
+    update(state, Message::FileTreeMessage(file_tree::FileTreeMessage::InitFolder(id))).chain(
+    update(state, Message::Debug(format!("Loaded project \"{name}\""))))
 }
 
 pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Message> {
@@ -165,7 +167,7 @@ pub(crate) fn project_page(state: &State) -> widget::Container<'_, Message> {
             pane_grid::Content::new(
                 scrollable(
                     match current_pane {
-                        Pane::FileList => container(file_tree::file_tree(&state.file_tree_state)),
+                        Pane::FileList => container(file_tree::file_tree(&state)),
                         Pane::DataEntry => container("Data Entry"),
                         Pane::Viewer => container("Viewer"),
                     }
@@ -188,7 +190,7 @@ pub(crate) fn project_page(state: &State) -> widget::Container<'_, Message> {
             })
             .title_bar(
                 pane_grid::TitleBar::new(widget::stack![match current_pane {
-                    Pane::FileList => container(file_tree::title_bar(&state.file_tree_state)),
+                    Pane::FileList => container(file_tree::title_bar(&state)),
                     Pane::DataEntry => container("Metadata"),
                     Pane::Viewer => container("Viewer"),
                 },])

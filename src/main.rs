@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 use r#box::apis::authorization_api::PostOauth2TokenRefreshParams;
 use r#box::apis::configuration::Configuration;
 use r#box::models::AccessToken;
+use r#box::models::Item;
 use iced::Element;
 use iced::Length;
 use iced::Subscription;
@@ -64,7 +65,7 @@ enum Message {
     NewProjMessage(project_page::NewProjEvent),
     FileTreeMessage(file_tree::FileTreeMessage),
     ProgSetMessage(program_settings::ProgramSettingsMessage),
-    Select(PathBuf),
+    Select(Item),
     CloseProj,
     PaneResized(pane_grid::ResizeEvent),
     PaneSwap(pane_grid::DragEvent),
@@ -85,7 +86,7 @@ struct State {
     screen: Screen,
     statusline: String,
     panes: pane_grid::State<Pane>,
-    selected: Option<PathBuf>,
+    selected: Option<Item>,
     project: Option<project::Project>,
     new_proj_state: project_page::NewProjState,
     homepage_state: homepage::HomepageState,
@@ -124,6 +125,9 @@ impl Default for State {
 }
 
 pub fn main() -> iced::Result {
+    unsafe {
+        std::env::set_var("ICED_BACKEND", "tiny_skia");
+    }
     iced::daemon(
         || (State::default(), Task::done(Message::Initialize)),
         update,
@@ -235,15 +239,13 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
             project_page::handle_new_proj_ev(state, new_proj_event)
         }
         Message::FileTreeMessage(file_tree_event) => {
-            file_tree::file_tree_handle(&mut state.file_tree_state, file_tree_event)
+            file_tree::file_tree_handle(state, file_tree_event)
         }
         Message::ProgSetMessage(prog_set_event) => {
             program_settings::handle_prog_settings(state, prog_set_event)
         }
-        Message::Select(path_buf) => {
-            if path_buf.exists() {
-                state.selected = Some(path_buf);
-            }
+        Message::Select(item) => {
+            state.selected = Some(item);
             Task::none()
         }
         Message::InitProgramSettings(program_settings_state) => {
@@ -265,7 +267,6 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
 }
 
 fn view(state: &State, window_id: window::Id) -> Element<Message> {
-
     if let Some(window) = &state.windows.iter().find(|x| x.0 == window_id) {
         match window.1 {
             Subwindow::Main => main_window(state),
@@ -284,7 +285,6 @@ fn view(state: &State, window_id: window::Id) -> Element<Message> {
 
 fn main_window(state: &State) -> Element<Message> {
     let top_bar = top_bar::top_bar(state);
-
 
     let body = match state.screen {
         Screen::Home => homepage::homepage(state),

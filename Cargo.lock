@@ -4461,6 +4461,7 @@ dependencies = [
  "iced",
  "iced_aw",
  "image",
+ "log",
  "openapi",
  "port_check",
  "rand",
