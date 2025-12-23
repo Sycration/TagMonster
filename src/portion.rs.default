@@ -15,10 +15,10 @@ impl Default for XState {
 
 pub(crate) enum XMessage {}
 
-pub(crate) fn x(state: &XState) -> Element<Message> {
+pub(crate) fn x(state: &State) -> Element<Message> {
     "".into()
 }
 
-pub(crate) fn x_handle(state: &mut XState, event: XMessage) -> Task<Message> {
+pub(crate) fn x_handle(state: &mut State, event: XMessage) -> Task<Message> {
     Task::none()
 }

@@ -35,7 +35,7 @@ pub(crate) fn file_tree(state: &FileTreeState) -> Element<Message> {
                 .on_press(Message::Select(x.path()));
             acc.push(
                 Row::new()
-                    .push_maybe(x.file_type().ok().and_then(|ft| {
+                    .push(x.file_type().ok().and_then(|ft| {
                         if ft.is_dir() {
                             Some(Button::new("→").on_press(Message::FileTreeMessage(FileTreeMessage::SetFolder(x.path()))))
                         } else {
@@ -53,7 +53,7 @@ pub(crate) fn file_tree(state: &FileTreeState) -> Element<Message> {
 pub(crate) fn title_bar(state: &FileTreeState) -> Element<Message> {
     row![
         button("↑").height(Length::Fill).on_press_maybe(state.path.parent().map(|p|Message::FileTreeMessage(FileTreeMessage::SetFolder(p.to_path_buf())))),
-        Space::new(10, 0),
+        Space::new().width(10),
         Text::new(state.path.to_string_lossy().to_string()).font(iced::font::Font::MONOSPACE).height(Length::Fill).align_y(Center).width(Length::Shrink),
     ].height(28).into()
 }

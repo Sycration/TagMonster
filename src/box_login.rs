@@ -1,4 +1,10 @@
-use std::{collections::HashMap, io, net::SocketAddr, path::{Path, PathBuf}, process::Termination};
+use std::{
+    collections::HashMap,
+    io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    process::Termination,
+};
 
 use axum::{
     extract::Query,
@@ -30,6 +36,7 @@ pub async fn get_key(
     id: String,
     secret: String,
     config_path: PathBuf,
+    read_cache: bool,
 ) -> anyhow::Result<AccessToken> {
     let client_id = id;
     let client_secret = secret;
@@ -41,8 +48,11 @@ pub async fn get_key(
         .create(true)
         .open(config_path)
         .await?;
+
     let mut s = String::new();
-    file.read_to_string(&mut s).await?;
+    if read_cache {
+        file.read_to_string(&mut s).await?;
+    }
     let token: AccessToken = match serde_json::from_str::<AccessToken>(&s) {
         std::result::Result::Ok(t) => t,
         Err(_) => {

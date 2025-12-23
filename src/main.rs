@@ -2,7 +2,9 @@ use std::fmt::Debug;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
+use r#box::apis::authorization_api::PostOauth2TokenRefreshParams;
 use r#box::apis::configuration::Configuration;
 use r#box::models::AccessToken;
 use iced::Element;
@@ -10,29 +12,36 @@ use iced::Length;
 use iced::Subscription;
 use iced::Task;
 use iced::Theme;
+use iced::futures::FutureExt;
 use iced::widget;
-use iced::widget::horizontal_rule;
 use iced::widget::pane_grid;
+use iced::widget::rule;
 use iced::widget::text;
 use iced::widget::text_input;
 use iced::widget::text_input::default;
 use iced::window;
 use iced::window::Id;
 use iced_aw::style::colors::WHITE;
+use tokio::io::AsyncReadExt;
+use tokio_stream::wrappers::ReadDirStream;
 
 use crate::file_tree::FileTreeState;
+use crate::persist::retrieve;
+use crate::persist::retrieve_sync;
+use crate::program_settings::ProgramSettingsState;
+use crate::project::Project;
 use crate::screens::Screen;
 use crate::subwindows::Subwindow;
 
-
+mod box_login;
 mod homepage;
+mod persist;
 mod program_settings;
 mod project_page;
 mod project_settings;
 mod screens;
 mod subwindows;
 mod top_bar;
-mod box_login;
 
 mod file_tree;
 mod project;
@@ -47,7 +56,9 @@ enum Message {
     CloseWindow(Subwindow),
     CloseWinById(Id),
     ChangeScreen(Screen),
-    NewProj,
+    NewProj(Project),
+    OpenProject(Project),
+    HomepageMessage(homepage::HomepageMessage),
     NewProjMessage(project_page::NewProjEvent),
     FileTreeMessage(file_tree::FileTreeMessage),
     ProgSetMessage(program_settings::ProgramSettingsMessage),
@@ -55,6 +66,8 @@ enum Message {
     CloseProj,
     PaneResized(pane_grid::ResizeEvent),
     PaneSwap(pane_grid::DragEvent),
+    InitProgramSettings(ProgramSettingsState),
+    InitAccessToken(Option<AccessToken>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,62 +86,50 @@ struct State {
     selected: Option<PathBuf>,
     project: Option<project::Project>,
     new_proj_state: project_page::NewProjState,
+    homepage_state: homepage::HomepageState,
     file_tree_state: file_tree::FileTreeState,
     program_set_state: program_settings::ProgramSettingsState,
     box_token: Option<AccessToken>,
     box_config: Configuration,
-    config_dir: PathBuf
 }
+
+static CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+    let cd = directories::ProjectDirs::from("org", "GenEq", "TagMaster")
+        .map(|pd| pd.config_local_dir().to_path_buf())
+        .unwrap_or(std::env::temp_dir());
+    let _ = std::fs::create_dir_all(&cd);
+    let _ = std::fs::create_dir_all(&cd.join("projects"));
+    cd
+});
 
 impl Default for State {
     fn default() -> Self {
-        let mut flist = pane_grid::State::new(Pane::FileList);
-        let viewer = flist
-            .0
-            .split(pane_grid::Axis::Vertical, flist.1, Pane::Viewer)
-            .unwrap();
-        flist
-            .0
-            .split(pane_grid::Axis::Horizontal, flist.1, Pane::DataEntry)
-            .unwrap();
-        let config_dir = directories::ProjectDirs::from("org", "GenEq", "TagMaster").map(|pd|pd.config_local_dir().to_path_buf()).unwrap_or(std::env::temp_dir());
-        let _ = std::fs::create_dir_all(&config_dir);
-
-        let token = std::fs::read_to_string(config_dir.join("auth.json")).ok().and_then(|json| {
-            serde_json::from_str::<AccessToken>(&json).ok()
-        });
-
-        let mut config = Configuration::default();
-        if let Some(t) = &token {
-            config.oauth_access_token = t.access_token.clone();
-        }
         Self {
             windows: vec![],
-            panes: flist.0,
+            panes: pane_grid::State::new(Pane::FileList).0,
             project: None,
             screen: Screen::Home,
             new_proj_state: project_page::NewProjState::default(),
             statusline: String::new(),
             file_tree_state: FileTreeState::default(),
-            program_set_state: program_settings::ProgramSettingsState::default(),
+            homepage_state: homepage::HomepageState::default(),
+            program_set_state: ProgramSettingsState::default(),
             selected: None,
-            box_token: token,
-            box_config: config,
-            config_dir: config_dir,
+            box_token: None,
+            box_config: Configuration::default(),
         }
     }
 }
 
 pub fn main() -> iced::Result {
-    iced::daemon("TagMaster", update, view)
-        .theme(theme)
-        .subscription(subscription)
-        .run_with(|| {
-            (
-                State::default(),
-                Task::done(Message::Initialize), //TODO startup function/message
-            )
-        })
+    iced::daemon(
+        || (State::default(), Task::done(Message::Initialize)),
+        update,
+        view,
+    )
+    .theme(theme)
+    .subscription(subscription)
+    .run()
 }
 
 fn subscription(state: &State) -> Subscription<Message> {
@@ -146,8 +147,63 @@ fn theme(_state: &State, _id: Id) -> Theme {
 pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::None => Task::none(),
-        Message::Initialize => update(state, Message::Debug("Initialized".to_string()))
-            .chain(update(state, Message::OpenWindow(Subwindow::Main))),
+        Message::Initialize => {
+            let mut flist = pane_grid::State::new(Pane::FileList);
+            let viewer = flist
+                .0
+                .split(pane_grid::Axis::Vertical, flist.1, Pane::Viewer)
+                .unwrap();
+            flist
+                .0
+                .split(pane_grid::Axis::Horizontal, flist.1, Pane::DataEntry)
+                .unwrap();
+
+            state.panes = flist.0;
+
+            Task::batch([
+                Task::perform(
+                    async {
+                        let rd = tokio::fs::read_dir(CONFIG_DIR.join("projects")).await;
+                        match rd {
+                            Ok(mut rd) => {
+                                let mut projects = vec![];
+                                while let Ok(Some(f)) = rd.next_entry().await {
+                                    if let Ok(mut file) = tokio::fs::File::open(f.path()).await {
+                                        let mut contents = String::new();
+                                        if file.read_to_string(&mut contents).await.is_ok() {
+                                            if let Ok(proj) =
+                                                serde_json::from_str::<Project>(&contents)
+                                            {
+                                                projects.push(proj);
+                                            }
+                                        }
+                                    }
+                                }
+                                projects
+                            }
+                            Err(_e) => vec![],
+                        }
+                    },
+                    |v| Message::HomepageMessage(homepage::HomepageMessage::InitProjects(v)),
+                ),
+                Task::perform(
+                    {
+                        async move {
+                            retrieve::<ProgramSettingsState>(&CONFIG_DIR, "settings")
+                                .await
+                                .unwrap_or_default()
+                        }
+                    },
+                    |res| Message::InitProgramSettings(res),
+                ),
+                Task::perform(
+                    { async move { retrieve::<AccessToken>(&CONFIG_DIR, "auth").await.ok() } },
+                    |res| Message::InitAccessToken(res),
+                ),
+            ])
+            .chain(Task::perform(async {}, |_| Message::None))
+            .chain(update(state, Message::OpenWindow(Subwindow::Main)))
+        }
         Message::Debug(s) => {
             eprintln!("{}", &s);
             state.statusline = s;
@@ -158,7 +214,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::CloseWindow(sw) => subwindows::close_window(state, sw),
         Message::CloseWinById(id) => subwindows::close_window_by_id(state, id),
         Message::CloseProj => project_page::close_project(state),
-        Message::NewProj => project_page::new_project(state),
+        Message::NewProj(proj) => project_page::new_project(state, proj),
         Message::PaneResized(resize_event) => {
             state.panes.resize(resize_event.split, resize_event.ratio);
             Task::none()
@@ -173,7 +229,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::NewProjMessage(new_proj_event) => {
-            project_page::handle_new_proj_ev(&mut state.new_proj_state, new_proj_event)
+            project_page::handle_new_proj_ev(state, new_proj_event)
         }
         Message::FileTreeMessage(file_tree_event) => {
             file_tree::file_tree_handle(&mut state.file_tree_state, file_tree_event)
@@ -186,7 +242,22 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.selected = Some(path_buf);
             }
             Task::none()
-        },
+        }
+        Message::InitProgramSettings(program_settings_state) => {
+            state.program_set_state = program_settings_state;
+            Task::none()
+        }
+        Message::InitAccessToken(token_opt) => {
+            if let Some(t) = &token_opt {
+                state.box_config.oauth_access_token = t.access_token.clone();
+            }
+            state.box_token = token_opt;
+            Task::none()
+        }
+        Message::HomepageMessage(homepage_message) => {
+            homepage::handle_homepage_message(state, homepage_message)
+        }
+        Message::OpenProject(project) => project_page::open_project(state, project),
     }
 }
 
@@ -211,7 +282,7 @@ fn main_window(state: &State) -> Element<Message> {
     let top_bar = top_bar::top_bar(state);
 
     let body = match state.screen {
-        Screen::Home => homepage::homepage(),
+        Screen::Home => homepage::homepage(state),
         Screen::Project => project_page::project_page(state),
     }
     .height(Length::Fill);
@@ -226,7 +297,7 @@ fn main_window(state: &State) -> Element<Message> {
             }
         });
 
-    widget::container(widget::column![top_bar, horizontal_rule(2), body, statusline].spacing(10))
+    widget::container(widget::column![top_bar, rule::horizontal(2), body, statusline].spacing(10))
         .padding(10)
         .into()
 }
