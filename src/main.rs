@@ -1,4 +1,3 @@
-use std::fmt::Debug;
 use std::hash::Hash;
 use std::io::Read;
 use std::ops::Range;
@@ -10,6 +9,11 @@ use r#box::apis::authorization_api::PostOauth2TokenRefreshParams;
 use r#box::apis::configuration::Configuration;
 use r#box::models::AccessToken;
 use r#box::models::Item;
+use derive_more::derive;
+use derive_more::Debug;
+use google_sheets4::Sheets;
+use google_sheets4::hyper_rustls::HttpsConnector;
+use google_sheets4::hyper_util::client::legacy::connect::HttpConnector;
 use iced::Color;
 use iced::Element;
 use iced::Font;
@@ -48,6 +52,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::broadcast::Receiver;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::warn;
 
 use crate::file_tree::FileTreeState;
 use crate::persist::retrieve;
@@ -58,6 +63,7 @@ use crate::screens::Screen;
 use crate::subwindows::Subwindow;
 
 mod box_login;
+mod gapi_login;
 mod homepage;
 mod log;
 mod persist;
@@ -88,6 +94,7 @@ enum Message {
     HomepageMessage(homepage::HomepageMessage),
     NewProjMessage(project_page::NewProjEvent),
     FileTreeMessage(file_tree::FileTreeMessage),
+    #[debug("Can't")]
     ProgSetMessage(program_settings::ProgramSettingsMessage),
     Select(Item),
     CloseProj,
@@ -119,6 +126,8 @@ struct State {
     program_set_state: program_settings::ProgramSettingsState,
     box_token: Option<AccessToken>,
     box_config: Configuration,
+    #[debug(skip)]
+    gapi_hub: Option<Sheets<HttpsConnector<HttpConnector>>>,
     log_receiver: Receiver<(String, tracing::Level)>,
 }
 
@@ -147,6 +156,7 @@ impl State {
             selected: None,
             box_token: None,
             box_config: Configuration::default(),
+            gapi_hub: None,
             log_receiver: rx,
         }
     }
@@ -154,7 +164,7 @@ impl State {
 
 pub fn main() -> anyhow::Result<()> {
     unsafe {
-        //std::env::set_var("ICED_BACKEND", "tiny_skia");
+        std::env::set_var("RUST_LOG", "debug");
     }
     let (tx, rx) = tokio::sync::broadcast::channel::<(String, tracing::Level)>(2usize.pow(16));
     let log_guard = log::init_logging(tx)?;
@@ -248,10 +258,11 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
                                     if let Ok(mut file) = tokio::fs::File::open(f.path()).await {
                                         let mut contents = String::new();
                                         if file.read_to_string(&mut contents).await.is_ok() {
-                                            if let Ok(proj) =
+                                            match
                                                 serde_json::from_str::<Project>(&contents)
                                             {
-                                                projects.push(proj);
+                                                Ok(proj) => projects.push(proj),
+                                                Err(e) => warn!("Invalid project {} in project directory: {e}", f.file_name().to_string_lossy())
                                             }
                                         }
                                     }
@@ -393,17 +404,15 @@ fn main_window(state: &State) -> Element<Message> {
 
 fn statusline(show_all: bool, content: &Content) -> Element<Message> {
     let elem = match show_all {
-        true => {
-            let window = text_editor(&content)
+        true => row![
+            text_editor(&content)
                 .font(iced::font::Font::MONOSPACE)
                 .highlight_with::<MyHighlighter>((), Highlight::to_format)
-                .on_action(|a| Message::StatuslineGo(a));
-            //row![
-                window//.height(Length::FillPortion(1)),
-                //button("V").on_press(Message::ToggleLogs)
-            //]
-            .into()
-        }
+                .on_action(|a| Message::StatuslineGo(a))
+                .height(Length::FillPortion(1)),
+            button("V").on_press(Message::ToggleLogs)
+        ]
+        .into(),
         false => {
             let text = content.text();
             let last_line = text

@@ -29,6 +29,7 @@ use tokio::{
 };
 
 use anyhow::{Ok, Result};
+use tracing::{debug, error};
 
 const TOKEN_URL: &str = "https://api.box.com/oauth2/token";
 
@@ -82,12 +83,12 @@ pub async fn get_key(
             let server_handle = tokio::spawn(async move { server.await });
 
             if let Err(e) = webbrowser::open(&oauth_url) {
-                println!("Failed to open browser: {}", e);
-                println!("Please open this URL manually:\n{}", oauth_url);
+                error!("Failed to open browser: {}", e);
+                error!("Please open this URL manually:\n{}", oauth_url);
             }
 
             // Wait for the callback
-            println!("Waiting for authentication callback...");
+            debug!("Waiting for authentication callback...");
             let k = match match code_receiver.recv().await {
                 Some(Some((code, n_state))) => {
                     // Verify state to prevent CSRF

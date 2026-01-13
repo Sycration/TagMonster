@@ -5,6 +5,7 @@ use crate::{
     screens::Screen, subwindows::Subwindow, update,
 };
 use r#box::apis::folders_api::GetFoldersIdParams;
+use google_sheets4::api::Spreadsheet;
 use iced::{
     Alignment::Center,
     Border, Element,
@@ -17,15 +18,18 @@ use iced::{
         scrollable, text, text_input,
     },
 };
+use tracing::error;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct NewProjState {
     top_url: String,
+    sheets_url: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum NewProjEvent {
-    SetUrl(String),
+    SetBoxUrl(String),
+    SetSheetsUrl(String),
     NewProjButton,
 }
 
@@ -49,7 +53,12 @@ pub(crate) fn new_project(state: &mut State, project: Project) -> Task<Message> 
             state,
             Message::HomepageMessage(homepage::HomepageMessage::AddProject(project.clone())),
         ),
-        update(state, Message::FileTreeMessage(file_tree::FileTreeMessage::InitFolder(project.top_folder_id))),
+        update(
+            state,
+            Message::FileTreeMessage(file_tree::FileTreeMessage::InitFolder(
+                project.top_folder_id,
+            )),
+        ),
         Task::perform(
             {
                 let project = project.clone();
@@ -73,23 +82,97 @@ pub(crate) fn open_project(state: &mut State, project: Project) -> Task<Message>
     state.project = Some(project);
     state.screen = Screen::Project;
     tracing::info!("Opened project \"{name}\"");
-    update(state, Message::FileTreeMessage(file_tree::FileTreeMessage::InitFolder(id)))
+    update(
+        state,
+        Message::FileTreeMessage(file_tree::FileTreeMessage::InitFolder(id)),
+    )
+}
+
+#[derive(Debug)]
+pub(crate) enum FetchJoinError<T> {
+    BoxApi(r#box::apis::Error<T>),
+    SheetsApi(google_sheets4::Error),
+    SheetDoesNotExist(i32),
+}
+
+impl<T> std::fmt::Display for FetchJoinError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchJoinError::BoxApi(e) => write!(f, "Box API error: {}", e),
+            FetchJoinError::SheetsApi(e) => write!(f, "Google Sheets API error: {}", e),
+            FetchJoinError::SheetDoesNotExist(s) => {
+                write!(f, "Spreadsheet does not contain sheet {s}")
+            }
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> std::error::Error for FetchJoinError<T> {}
+
+impl<T> From<r#box::apis::Error<T>> for FetchJoinError<T> {
+    fn from(e: r#box::apis::Error<T>) -> Self {
+        FetchJoinError::BoxApi(e)
+    }
+}
+
+impl<T> From<google_sheets4::Error> for FetchJoinError<T> {
+    fn from(e: google_sheets4::Error) -> Self {
+        FetchJoinError::SheetsApi(e)
+    }
 }
 
 pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Message> {
     match ev {
-        NewProjEvent::SetUrl(url) => {
+        NewProjEvent::SetBoxUrl(url) => {
+            state.new_proj_state.top_url = url;
+            Task::none()
+        }
+        NewProjEvent::SetSheetsUrl(url) => {
             state.new_proj_state.top_url = url;
             Task::none()
         }
         NewProjEvent::NewProjButton => {
-            let url = state.new_proj_state.top_url.clone();
-            let id: Result<usize, _> = url.split('/').last().unwrap_or("").parse();
-            let id = match id {
+            let _box_token = if let Some(t) = &state.box_token {
+                t
+            } else {
+                error!("Not logged in to Box");
+                return Task::none();
+            };
+
+            let hub = if let Some(t) = state.gapi_hub.clone() {
+                t
+            } else {
+                error!("Google authentication is not set up");
+                return Task::none();
+            };
+
+            let box_url = state.new_proj_state.top_url.clone();
+            let box_id: Result<usize, _> = box_url.split('/').last().unwrap_or_default().parse();
+            let box_id = match box_id {
                 Ok(id) => id,
                 Err(e) => {
                     return update(state, {
-                        tracing::warn!("Invalid URL {}: {}", url, e);
+                        tracing::warn!("Invalid Box URL {}: {}", box_url, e);
+                        Message::None
+                    });
+                }
+            };
+
+            let mut sheets_url = state.new_proj_state.sheets_url.clone();
+            let spreadsheet_id = sheets_url.split('/').nth_back(1);
+            let sheet_id: Result<i32, _> =
+                sheets_url.split('=').last().unwrap_or_default().parse();
+            let (spreadsheet_id, sheet_id) = match (spreadsheet_id, sheet_id) {
+                (Some(sp), Ok(s)) => (sp.to_string(), s),
+                (None, _) => {
+                    return update(state, {
+                        tracing::warn!("Invalid Spreadsheet URL (no spreadsheet ID): {}", box_url);
+                        Message::None
+                    });
+                }
+                (_, Err(e)) => {
+                    return update(state, {
+                        tracing::warn!("Invalid Spreadsheet URL (no sheet ID): {}", box_url);
                         Message::None
                     });
                 }
@@ -99,31 +182,74 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
 
             Task::perform(
                 async move {
-                    r#box::apis::folders_api::get_folders_id(
-                        &config,
-                        GetFoldersIdParams {
-                            folder_id: id.to_string(),
-                            fields: None,
-                            if_none_match: None,
-                            boxapi: None,
-                            sort: None,
-                            direction: None,
-                            offset: None,
-                            limit: None,
+                    tokio::try_join!(
+                        async {
+                            r#box::apis::folders_api::get_folders_id(
+                                &config,
+                                GetFoldersIdParams {
+                                    folder_id: box_id.to_string(),
+                                    fields: None,
+                                    if_none_match: None,
+                                    boxapi: None,
+                                    sort: None,
+                                    direction: None,
+                                    offset: None,
+                                    limit: None,
+                                },
+                            )
+                            .await
+                            .map_err(FetchJoinError::from)
                         },
+                        async {
+                            hub.spreadsheets()
+                                .get(&spreadsheet_id)
+                                .doit()
+                                .await
+                                .map_err(FetchJoinError::from)
+                                .and_then(|s| {
+                                    let sheet_exists =
+                                        s.1.sheets.as_ref().map_or(false, |sheets| {
+                                            sheets.iter().any(|s| {
+                                                s.properties.as_ref().map_or(false, |p| {
+                                                    p.sheet_id == Some(sheet_id)
+                                                })
+                                            })
+                                        });
+
+                                    if sheet_exists {
+                                        Ok(s)
+                                    } else {
+                                        Err(FetchJoinError::SheetDoesNotExist(sheet_id))
+                                    }
+                                })
+                        }
                     )
-                    .await
                 },
                 {
                     move |x| match x {
-                        Ok(f) => Message::NewProj(Project {
-                            name: f.name.unwrap_or(format!("Folder {id} Project")),
-                            top_folder_id: id,
-                            url: url.clone(),
+                        Ok((folder_res, sheet_res)) => Message::NewProj(Project {
+                            name: folder_res
+                                .name
+                                .unwrap_or(format!("Folder {} Project", box_id)),
+                            top_folder_id: box_id,
+                            box_url: box_url.clone(),
+                            sheets_url: sheets_url,
+                            sheet_id: sheet_id
+
                         }),
-                        Err(e) => {
-                            tracing::error!("Error fetching folder {}: {}", id, e);
-                            Message::None
+                        Err(e) => match e {
+                            FetchJoinError::BoxApi(error) => {
+                                tracing::error!("Error fetching folder {}: {}", box_id, error);
+                                Message::None
+                            }
+                            FetchJoinError::SheetsApi(error) => {
+                                tracing::error!("Error fetching spreadsheet: {}", error);
+                                Message::None
+                            }
+                            FetchJoinError::SheetDoesNotExist(error) => {
+                                tracing::error!("Spreadsheet error: {}", error);
+                                Message::None
+                            }
                         },
                     }
                 },
@@ -144,9 +270,21 @@ pub(crate) fn new_project_view(state: &State) -> Element<Message> {
                 state
                     .box_token
                     .as_ref()
-                    .map(|_| |u| Message::NewProjMessage(NewProjEvent::SetUrl(u)))
+                    .map(|_| |u| Message::NewProjMessage(NewProjEvent::SetBoxUrl(u)))
             ),
             text("Copy and paste the box folder URL here"),
+            Space::new().height(10),
+            TextInput::new(
+                "https://docs.google.com/spreadsheets/d/123456789/edit?gid=0#gid=0",
+                &state.new_proj_state.top_url
+            )
+            .on_input_maybe(
+                state
+                    .box_token
+                    .as_ref()
+                    .map(|_| |u| Message::NewProjMessage(NewProjEvent::SetBoxUrl(u)))
+            ),
+            text("Copy and paste the Google Sheets URL here"),
         ]
         .spacing(10),
         row![
