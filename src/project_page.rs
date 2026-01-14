@@ -4,7 +4,15 @@ use crate::{
     CONFIG_DIR, Message, Pane, State, file_tree, homepage, persist, project::Project,
     screens::Screen, subwindows::Subwindow, update,
 };
-use r#box::apis::folders_api::GetFoldersIdParams;
+use r#box::{
+    apis::{
+        downloads_api::{GetFilesIdContentParams, get_files_id_content},
+        files_api::GetFilesIdParams,
+        folders_api::{GetFoldersIdItemsParams, GetFoldersIdParams},
+        zip_downloads_api::PostZipDownloadsParams,
+    },
+    models::{ZipDownloadRequest, ZipDownloadRequestItemsInner},
+};
 use google_sheets4::api::Spreadsheet;
 use iced::{
     Alignment::Center,
@@ -18,6 +26,9 @@ use iced::{
         scrollable, text, text_input,
     },
 };
+use reqwest::Client;
+use tokio::{fs::File, io::AsyncWriteExt};
+use tokio_stream::StreamExt;
 use tracing::error;
 
 #[derive(Debug, Default, Clone)]
@@ -66,7 +77,71 @@ pub(crate) fn new_project(state: &mut State, project: Project) -> Task<Message> 
                 async move { persist::persist(&project, &dir, project.name.as_str()).await }
             },
             |_| Message::None,
-        ),
+        ).chain({
+            let configuration = state.box_config.clone();
+            let project = project.clone();
+            let client = state.box_config.client.clone();
+            let token = state.box_token.as_ref().and_then(|x|x.access_token.clone()).unwrap_or_default();
+        Task::perform(async move {
+            let result: Result<(), String> = async {
+                let z = r#box::apis::zip_downloads_api::post_zip_downloads(
+                    &configuration,
+                    PostZipDownloadsParams {
+                        zip_download_request: Some(ZipDownloadRequest {
+                            items: vec![
+                                ZipDownloadRequestItemsInner {
+                                    r#type: r#box::models::zip_download_request_items_inner::Type::Folder,
+                                    id: project.top_folder_id.to_string(),
+                                },
+                            ],
+                            download_file_name: Some(project.name.clone()),
+                        }),
+                    },
+                )
+                .await
+                .map_err(|e| format!("Failed to retrieve ZIP URL: {}", e))?;
+
+                let url = z
+                    .download_url
+                    .ok_or_else(|| "ZIP URL had no URL in it".to_string())?;
+
+                let resp = client
+                    .get(url)
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to open ZIP URL: {}", e))?;
+
+                let mut file = File::create(
+                    &CONFIG_DIR.join("projects").join(project.name + ".zip"),
+                )
+                .await
+                .map_err(|e| format!("Failed to create ZIP file: {}", e))?;
+
+                let mut content = resp.bytes_stream();
+
+                while let Some(chunk) = content.next().await {
+                    let chunk = chunk
+                        .map_err(|e| format!("Failed to download ZIP chunk: {}", e))?;
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|e| format!("Failed to write ZIP chunk: {}", e))?;
+                }
+
+                file.flush()
+                    .await
+                    .map_err(|e| format!("Failed to flush ZIP file: {}", e))?;
+
+                Ok::<(), String>(())
+            }
+            .await;
+
+            // Log any error that occurred in the async block.
+            if let Err(e) = result {
+                tracing::error!("Failed to download project ZIP: {}", e);
+            }
+        }, |res| Message::None)
+        })
     ]);
     state.project = Some(project);
     //state.file_tree_state.path = state.new_proj_state.top_url.clone();
@@ -159,7 +234,7 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
             };
 
             let mut sheets_url = state.new_proj_state.sheets_url.clone();
-            let spreadsheet_id = sheets_url.split('/').nth_back(1).map(|s|s.to_string());
+            let spreadsheet_id = sheets_url.split('/').nth_back(1).map(|s| s.to_string());
             let sheet_id: Result<i32, _> = sheets_url.split('=').last().unwrap_or_default().parse();
             let (spreadsheet_id, sheet_id) = match (spreadsheet_id, sheet_id) {
                 (Some(sp), Ok(s)) => (sp.to_string(), s),
@@ -183,48 +258,43 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
 
             Task::perform(
                 async move {
-                    tokio::try_join!(
-                        async {
-                            r#box::apis::folders_api::get_folders_id(
-                                &config,
-                                GetFoldersIdParams {
-                                    folder_id: box_id.to_string(),
-                                    fields: None,
-                                    if_none_match: None,
-                                    boxapi: None,
-                                    sort: None,
-                                    direction: None,
-                                    offset: None,
-                                    limit: None,
-                                },
-                            )
-                            .await
-                            .map_err(FetchJoinError::from)
+                    let folder = r#box::apis::folders_api::get_folders_id(
+                        &config,
+                        GetFoldersIdParams {
+                            folder_id: box_id.to_string(),
+                            fields: None,
+                            if_none_match: None,
+                            boxapi: None,
+                            sort: None,
+                            direction: None,
+                            offset: None,
+                            limit: None,
                         },
-                        async {
-                            hub.spreadsheets()
-                                .get(&s_id)
-                                .doit()
-                                .await
-                                .map_err(FetchJoinError::from)
-                                .and_then(|s| {
-                                    let sheet_exists =
-                                        s.1.sheets.as_ref().map_or(false, |sheets| {
-                                            sheets.iter().any(|s| {
-                                                s.properties
-                                                    .as_ref()
-                                                    .map_or(false, |p| p.sheet_id == Some(sheet_id))
-                                            })
-                                        });
-
-                                    if sheet_exists {
-                                        Ok(s)
-                                    } else {
-                                        Err(FetchJoinError::SheetDoesNotExist(sheet_id))
-                                    }
-                                })
-                        }
                     )
+                    .await
+                    .map_err(FetchJoinError::from)?;
+                    let sheet = hub
+                        .spreadsheets()
+                        .get(&s_id)
+                        .doit()
+                        .await
+                        .map_err(FetchJoinError::from)
+                        .and_then(|s| {
+                            let sheet_exists = s.1.sheets.as_ref().map_or(false, |sheets| {
+                                sheets.iter().any(|s| {
+                                    s.properties
+                                        .as_ref()
+                                        .map_or(false, |p| p.sheet_id == Some(sheet_id))
+                                })
+                            });
+
+                            if sheet_exists {
+                                Ok(s)
+                            } else {
+                                Err(FetchJoinError::SheetDoesNotExist(sheet_id))
+                            }
+                        })?;
+                    Ok((folder, sheet))
                 },
                 {
                     move |x| match x {
@@ -301,7 +371,9 @@ pub(crate) fn new_project_view(state: &State) -> Element<Message> {
                 .style(button::secondary)
                 .on_press(Message::CloseWindow(Subwindow::NewProject)),
             Space::new().width(40),
-        ]
+        ],
+        //TODO
+        text("Currently, TagMaster only creates the spreadsheet. In a future release, you will edit it through TagMaster as well.")
     ]
     .align_x(Center)
     .padding(40)

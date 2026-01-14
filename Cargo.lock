@@ -2617,6 +2617,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "magic"
+version = "0.16.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50ecbc2953846d9a3f8f6ed0700e66e49e5ad696eefb4e17fbaebbf457e1e752"
+dependencies = [
+ "bitflags 2.10.0",
+ "magic-sys",
+]
+
+[[package]]
+name = "magic-sys"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eff86ae08895140d628119d407d568f3b657145ee8c265878064f717534bb3bc"
+dependencies = [
+ "libc",
+ "vcpkg",
+]
+
+[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4681,6 +4701,7 @@ dependencies = [
  "iced_aw",
  "iced_futures",
  "image",
+ "magic",
  "openapi",
  "port_check",
  "rand",

@@ -85,7 +85,8 @@ pub fn handle_prog_settings(state: &mut State, event: ProgramSettingsMessage) ->
         }
         ProgramSettingsMessage::LoginBox(token_response) => match token_response {
             Ok(t) => {
-                state.box_token = Some(t);
+                state.box_token = Some(t.clone());
+                state.box_config.oauth_access_token = t.access_token;
                 update(state, {
                     tracing::info!("Logged in Box successfully");
                     Message::None

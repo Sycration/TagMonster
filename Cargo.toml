@@ -28,6 +28,7 @@ iced_futures = "0.14.0"
 google-sheets4 = "7.0.0"
 async-trait = "0.1.89"
 derive_more = {version = "2.1.1", features = ["debug"]}
+magic = "0.16.7"
 
 
 [profile.dev.package."*"]
