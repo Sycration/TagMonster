@@ -30,7 +30,7 @@ use iced::{
     Task, Theme,
     advanced::graphics::text::cosmic_text::Font,
     border::Radius,
-    futures::{FutureExt, TryFutureExt},
+    futures::{FutureExt, TryFutureExt, future::join_all},
     widget::{
         self, Button, Column, Row, Space, TextInput, button, column, container, pane_grid, row,
         scrollable, text, text_input,
@@ -62,8 +62,19 @@ struct Node {
     name: String,
     file_type: InternalType,
     id: String,
+    idx: usize,
     web_link: String,
     children: Option<Vec<Node>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct FlatItem {
+    name: String,
+    file_type: InternalType,
+    id: String,
+    idx: usize,
+    web_link: String,
+    children: (usize, usize),
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
@@ -118,16 +129,21 @@ async fn build_folder_tree(
             let entries = listing.entries.unwrap_or_default();
             let mut nodes: Vec<Node> = Vec::with_capacity(entries.len());
 
-            for entry in entries.into_iter() {
+            let mut folder_idx = 0;
+            let mut file_idx = 0;
+
+            for (idx, entry) in entries.into_iter().enumerate() {
                 match entry {
                     r#box::models::Item::FileFull(f) => {
                         nodes.push(Node {
                             name: f.name.unwrap_or_else(|| "UNNAMED FILE".to_string()),
                             web_link: format!("{}/file/{}", hostname.trim_end_matches('/'), &f.id),
                             id: f.id,
+                            idx: file_idx,
                             file_type: InternalType::File,
                             children: None,
                         });
+                        file_idx += 1;
                     }
                     r#box::models::Item::FolderMini(f) => {
                         let child_node =
@@ -141,9 +157,11 @@ async fn build_folder_tree(
                                 &f.id
                             ),
                             id: f.id,
+                            idx: folder_idx,
                             file_type: InternalType::Folder,
                             children: Some(child_node),
                         });
+                        folder_idx += 1;
                     }
                     r#box::models::Item::WebLink(f) => {
                         nodes.push(Node {
@@ -154,9 +172,11 @@ async fn build_folder_tree(
                                 &f.id
                             ),
                             id: f.id,
+                            idx: file_idx,
                             file_type: InternalType::Link,
                             children: None,
                         });
+                        file_idx += 1;
                     }
                 };
             }
@@ -196,6 +216,7 @@ async fn build_folder_tree(
             hostname.trim_end_matches('/'),
             root_listing.id
         ),
+        idx: 0,
         children: Some(children),
         file_type: InternalType::Folder,
     })
@@ -551,16 +572,29 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
             Task::perform(
                 async move {
                     // Flatten the tree into a Vec with folders before files at each level.
-                    let mut flat: Vec<Node> = Vec::new();
+                    let mut flat: Vec<FlatItem> = Vec::new();
 
-                    fn flatten_node(node: &Node, out: &mut Vec<Node>) {
+                    fn flatten_node(node: &Node, out: &mut Vec<FlatItem>) {
+                        let mut child_counts = (0, 0);
+
+                        if let Some(children) = &node.children {
+                            for child in children {
+                                if child.file_type == InternalType::Folder {
+                                    child_counts.0 += 1;
+                                } else {
+                                    child_counts.1 += 1;
+                                }
+                            }
+                        }
+
                         // push the folder/file itself (as a flattened entry with no children)
-                        out.push(Node {
+                        out.push(FlatItem {
                             name: node.name.clone(),
                             file_type: node.file_type,
                             id: node.id.clone(),
+                            idx: node.idx,
                             web_link: node.web_link.clone(),
-                            children: None,
+                            children: child_counts,
                         });
 
                         if let Some(children) = &node.children {
@@ -568,7 +602,7 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
                             let mut folders: Vec<&Node> = Vec::new();
                             let mut files: Vec<&Node> = Vec::new();
                             for c in children {
-                                if c.children.is_some() {
+                                if c.file_type == InternalType::Folder {
                                     folders.push(c);
                                 } else {
                                     files.push(c);
@@ -582,12 +616,13 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
 
                             // then append files
                             for file in files {
-                                out.push(Node {
+                                out.push(FlatItem {
                                     name: file.name.clone(),
                                     id: file.id.clone(),
+                                    idx: file.idx,
                                     web_link: file.web_link.clone(),
                                     file_type: file.file_type,
-                                    children: None,
+                                    children: (0, 0),
                                 });
                             }
                         }
@@ -694,12 +729,16 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
                             }
 
                             tokio::join!(
-                                create_filetype_tags(&project, hub.clone(), box_config.clone(), &flat),
-                                create_folder_names(&project, hub.clone(), &flat),
+                                create_filetype_tags(
+                                    &project,
+                                    hub.clone(),
+                                    box_config.clone(),
+                                    &flat
+                                ),
+                                create_folder_names(&project, hub.clone(), &flat,),
                                 create_file_names(&project, hub.clone(), &flat),
                             );
-                                
-
+                            info!("Done making sheet");
                         }
                         Err(e) => {
                             tracing::error!("Failed to copy template sheet: {}", e);
@@ -721,51 +760,30 @@ async fn create_folder_names(
             google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
         >,
     >,
-    flat: &Vec<Node>,
+    flat: &Vec<FlatItem>,
 ) {
     // Write folder hyperlinks and "Loose files:" markers in one pass.
-    let flat_entries = flat.clone();
-    let safe_title = project.name.replace('\'', "''");
-    let mut last_was_folder = false;
-    for (i, node) in flat_entries.into_iter().enumerate().skip(1) {
-        let row = 2 + (i - 1);
+    let futures = flat.into_iter().enumerate().skip(1).map(|(i, node)| {
+        let safe_title = project.name.replace('\'', "''");
+        let hub = hub.clone();
+        async move {
+            let row = 2 + (i - 1);
 
-        match node.file_type {
-            InternalType::Folder => {
-                last_was_folder = true;
-
-                let esc_name = node.name.replace('"', "\\\"");
-                let esc_url = node.web_link.replace('"', "\\\"");
-                let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
-                let range = format!("'{}'!C{}", safe_title, row);
-                let vr = google_sheets4::api::ValueRange {
-                    range: Some(range.clone()),
-                    major_dimension: None,
-                    values: Some(vec![vec![serde_json::Value::String(formula)]]),
-                };
-
-                match hub
-                    .spreadsheets()
-                    .values_update(vr, &project.spreadsheet_id, &range)
-                    .value_input_option("USER_ENTERED")
-                    .doit()
-                    .await
-                {
-                    Ok((_r, _)) => tracing::info!("Wrote folder link to {}", range),
-                    Err(e) => tracing::error!("Failed to write {}: {}", range, e),
-                }
-            }
-            InternalType::File | InternalType::Link => {
-                if last_was_folder {
-                    last_was_folder = false;
-
-                    let range = format!("'{}'!C{}", safe_title, row);
+            match node.file_type {
+                InternalType::Folder => {
+                    let esc_name = node.name.replace('"', "\\\"");
+                    let esc_url = node.web_link.replace('"', "\\\"");
+                    let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
+                    let folder_info =
+                        format!("({} Folders) ({} Files)", node.children.0, node.children.1);
+                    let range = format!("'{}'!B{}:C{}", safe_title, row, row);
                     let vr = google_sheets4::api::ValueRange {
                         range: Some(range.clone()),
                         major_dimension: None,
-                        values: Some(vec![vec![serde_json::Value::String(
-                            "Loose files:".to_string(),
-                        )]]),
+                        values: Some(vec![vec![
+                            serde_json::Value::String(folder_info),
+                            serde_json::Value::String(formula),
+                        ]]),
                     };
 
                     match hub
@@ -775,13 +793,38 @@ async fn create_folder_names(
                         .doit()
                         .await
                     {
-                        Ok((_r, _)) => tracing::info!("Wrote marker to {}", range),
+                        Ok((_r, _)) => tracing::info!("Wrote folder link to {}", range),
                         Err(e) => tracing::error!("Failed to write {}: {}", range, e),
+                    }
+                }
+                InternalType::File | InternalType::Link => {
+                    if node.idx == 0 {
+                        let range = format!("'{}'!C{}", safe_title, row);
+                        let vr = google_sheets4::api::ValueRange {
+                            range: Some(range.clone()),
+                            major_dimension: None,
+                            values: Some(vec![vec![serde_json::Value::String(
+                                "Loose files:".to_string(),
+                            )]]),
+                        };
+
+                        match hub
+                            .spreadsheets()
+                            .values_update(vr, &project.spreadsheet_id, &range)
+                            .value_input_option("USER_ENTERED")
+                            .doit()
+                            .await
+                        {
+                            Ok((_r, _)) => tracing::info!("Wrote marker to {}", range),
+                            Err(e) => tracing::error!("Failed to write {}: {}", range, e),
+                        }
                     }
                 }
             }
         }
-    }
+    });
+
+    join_all(futures).await;
 }
 
 async fn create_filetype_tags(
@@ -792,56 +835,66 @@ async fn create_filetype_tags(
         >,
     >,
     box_config: r#box::apis::configuration::Configuration,
-    flat: &Vec<Node>,
+    flat: &Vec<FlatItem>,
 ) {
     match magic_db::load() {
         Ok(db) => {
             {
                 // Iterate flattened entries (skip the root at index 0). Place results starting at row 2.
-                let flat_entries = flat.clone();
-                let safe_title = project.name.replace('\'', "''");
                 let client = reqwest::Client::new();
-                'out: for (i, node) in flat_entries.into_iter().enumerate().skip(1) {
-                    let row = 2 + (i - 1); // top-level is row 1, first child -> row 2
-                    let value = match node.file_type {
-                        InternalType::Folder => {
-                            // skip folders
-                            continue;
-                        }
-                        InternalType::Link => "Web link".to_string(),
-                        InternalType::File => {
-                            // Download up to 100KiB from Box using the file ID
-                            let resp = get_files_id_content(
-                                &box_config,
-                                GetFilesIdContentParams {
-                                    file_id: node.id,
-                                    range: Some(format!("bytes=0-{}", (100 * 1024))),
-                                    boxapi: None,
-                                    version: None,
-                                    access_token: None,
-                                },
-                            )
-                            .await
-                            .map(|f| f.url().to_owned());
+                let futures = flat.into_iter().enumerate().skip(1).map(|(i, node)| {
+                    let box_config = box_config.clone();
+                    let client = client.clone();
+                    let db = db.clone();
+                    let safe_title = project.name.replace('\'', "''");
+                    let hub = hub.clone();
+                    let id = node.id.clone();
+                    async move {
+                        let row = 2 + (i - 1); // top-level is row 1, first child -> row 2
 
-                            let url = match resp {
-                                Ok(url) => url,
-                                Err(e) => {
-                                    error!("Failed to get file download URL: {}", e);
-                                    break;
-                                }
-                            };
+                        let value = match node.file_type {
+                            InternalType::Folder => {
+                                // skip folders
+                                return;
+                            }
+                            InternalType::Link => "Web link".to_string(),
+                            InternalType::File => {
+                                // Download up to 100KiB from Box using the file ID
+                                let resp = get_files_id_content(
+                                    &box_config,
+                                    GetFilesIdContentParams {
+                                        file_id: id,
+                                        range: Some(format!("bytes=0-{}", (100 * 1024))),
+                                        boxapi: None,
+                                        version: None,
+                                        access_token: None,
+                                    },
+                                )
+                                .await
+                                .map(|f| f.url().to_owned());
 
-                            let token = match box_config.oauth_access_token.clone() {
-                                Some(t) => t,
-                                None => {
-                                    error!("Not logged in to Box");
-                                    break;
-                                }
-                            };
+                                let url = match resp {
+                                    Ok(url) => url,
+                                    Err(e) => {
+                                        error!("Failed to get file download URL: {}", e);
+                                        return;
+                                    }
+                                };
 
-                            let resp =
-                                match client.get(url.to_owned()).bearer_auth(&token).send().await {
+                                let token = match box_config.oauth_access_token.clone() {
+                                    Some(t) => t,
+                                    None => {
+                                        error!("Not logged in to Box");
+                                        return;
+                                    }
+                                };
+
+                                let resp = match client
+                                    .get(url.to_owned())
+                                    .bearer_auth(&token)
+                                    .send()
+                                    .await
+                                {
                                     Ok(r) => r,
                                     Err(e) => {
                                         error!(
@@ -849,70 +902,73 @@ async fn create_filetype_tags(
                                             node.name,
                                             e.to_string()
                                         );
-                                        break;
+                                        return;
                                     }
                                 };
 
-                            let mut buf = if let Some(l) = resp.content_length() {
-                                Vec::with_capacity(l.try_into().unwrap_or(usize::MAX)) // We might be on 32 bit who knows
-                            } else {
-                                Vec::new()
-                            };
+                                let mut buf = if let Some(l) = resp.content_length() {
+                                    Vec::with_capacity(l.try_into().unwrap_or(usize::MAX)) // We might be on 32 bit who knows
+                                } else {
+                                    Vec::new()
+                                };
 
-                            let mut stream = resp.bytes_stream();
+                                let mut stream = resp.bytes_stream();
 
-                            while let Some(chunk) = stream.next().await {
-                                let chunk = match chunk {
-                                    Ok(c) => c,
-                                    Err(e) => {
-                                        error!("Failed to download file {}: {}", &node.name, e);
-                                        break 'out;
+                                while let Some(chunk) = stream.next().await {
+                                    let chunk = match chunk {
+                                        Ok(c) => c,
+                                        Err(e) => {
+                                            error!("Failed to download file {}: {}", &node.name, e);
+                                            return;
+                                        }
+                                    };
+                                    buf.extend_from_slice(&chunk);
+                                }
+
+                                debug!("downloaded file {}", &node.name);
+
+                                let mut cursor = Cursor::new(buf);
+
+                                // Analyze with MagicDb
+                                let detected = match db.best_magic(&mut cursor) {
+                                    Ok(result) => {
+                                        // pick the first sensible result if present
+                                        result.message()
+                                    }
+                                    Err(_) => {
+                                        warn!("Failed to analyze file {}", &node.name);
+                                        "Unknown".to_string()
                                     }
                                 };
-                                buf.extend_from_slice(&chunk);
+                                detected
                             }
+                        };
 
-                            debug!("downloaded file {}", &node.name);
-
-                            let mut cursor = Cursor::new(buf);
-
-                            // Analyze with MagicDb
-                            let detected = match db.best_magic(&mut cursor) {
-                                Ok(result) => {
-                                    // pick the first sensible result if present
-                                    result.message()
-                                }
-                                Err(_) => {
-                                    warn!("Failed to analyze file {}", &node.name);
-                                    "Unknown".to_string()
-                                }
-                            };
-                            detected
-                        }
-                    };
-
-                    // Write the result into column G for this row
-                    let range = format!("'{}'!G{}", safe_title, row);
-                    let vr = google_sheets4::api::ValueRange {
-                        range: Some(range.clone()),
-                        major_dimension: None,
-                        values: Some(vec![vec![serde_json::Value::String(value)]]),
-                    };
-                    match hub
-                        .spreadsheets()
-                        .values_update(vr, &project.spreadsheet_id, &range)
-                        .value_input_option("RAW")
-                        .doit()
-                        .await
-                    {
-                        Ok((_r, _)) => {
-                            tracing::info!("Wrote file type to {}", range);
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to write {}: {}", range, e);
+                        // Write the result into column G for this row
+                        let range = format!("'{}'!G{}", safe_title, row);
+                        let vr = google_sheets4::api::ValueRange {
+                            range: Some(range.clone()),
+                            major_dimension: None,
+                            values: Some(vec![vec![serde_json::Value::String(value)]]),
+                        };
+                        match hub
+                            .spreadsheets()
+                            .values_update(vr, &project.spreadsheet_id, &range)
+                            .value_input_option("RAW")
+                            .doit()
+                            .await
+                        {
+                            Ok((_r, _)) => {
+                                tracing::info!("Wrote file type to {}", range);
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to write {}: {}", range, e);
+                            }
                         }
                     }
-                }
+                });
+
+                join_all(futures).await;
             }
         }
         Err(e) => {
@@ -932,42 +988,43 @@ async fn create_file_names(
             google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
         >,
     >,
-    flat: &Vec<Node>,
+    flat: &Vec<FlatItem>,
 ) {
-    let flat_entries = flat.clone();
-    let safe_title = project.name.replace('\'', "''");
-    for (i, node) in flat_entries.into_iter().enumerate().skip(1) {
-        let row = 2 + (i - 1);
+    let futures = flat.into_iter().enumerate().skip(1).map(|(i, node)| {
+        let safe_title = project.name.replace('\'', "''");
+        let hub = hub.clone();
+        async move {
+            let row = 2 + (i - 1);
 
-        match node.file_type {
-            InternalType::File | InternalType::Link => {
+            match node.file_type {
+                InternalType::File | InternalType::Link => {
+                    let esc_name = node.name.replace('"', "\\\"");
+                    let esc_url = node.web_link.replace('"', "\\\"");
+                    let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
+                    let range = format!("'{}'!D{}", safe_title, row);
+                    let vr = google_sheets4::api::ValueRange {
+                        range: Some(range.clone()),
+                        major_dimension: None,
+                        values: Some(vec![vec![serde_json::Value::String(formula)]]),
+                    };
 
-                let esc_name = node.name.replace('"', "\\\"");
-                let esc_url = node.web_link.replace('"', "\\\"");
-                let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
-                let range = format!("'{}'!D{}", safe_title, row);
-                let vr = google_sheets4::api::ValueRange {
-                    range: Some(range.clone()),
-                    major_dimension: None,
-                    values: Some(vec![vec![serde_json::Value::String(formula)]]),
-                };
-
-                match hub
-                    .spreadsheets()
-                    .values_update(vr, &project.spreadsheet_id, &range)
-                    .value_input_option("USER_ENTERED")
-                    .doit()
-                    .await
-                {
-                    Ok((_r, _)) => tracing::info!("Wrote file link to {}", range),
-                    Err(e) => tracing::error!("Failed to write {}: {}", range, e),
+                    match hub
+                        .spreadsheets()
+                        .values_update(vr, &project.spreadsheet_id, &range)
+                        .value_input_option("USER_ENTERED")
+                        .doit()
+                        .await
+                    {
+                        Ok((_r, _)) => tracing::info!("Wrote file link to {}", range),
+                        Err(e) => tracing::error!("Failed to write {}: {}", range, e),
+                    }
                 }
+                InternalType::Folder => {}
             }
-            InternalType::Folder => { }
         }
-    }
+    });
+    join_all(futures).await;
 }
-
 
 // Attempt to rename the newly copied sheet to the project name
 async fn rename_new_sheet(

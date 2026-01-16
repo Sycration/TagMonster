@@ -168,7 +168,9 @@ impl State {
 
 pub fn main() -> anyhow::Result<()> {
     unsafe {
-        std::env::set_var("RUST_LOG", "info");
+        if std::env::var("RUST_LOG").is_err() {
+            std::env::set_var("RUST_LOG", "info");
+        }
     }
     let (tx, rx) = tokio::sync::broadcast::channel::<(String, tracing::Level)>(2usize.pow(16));
     let log_guard = log::init_logging(tx)?;
