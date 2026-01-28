@@ -6,19 +6,19 @@ edition = "2024"
 [dependencies]
 iced = {version = "0.14", features = ["tokio", "image", "advanced"]}
 iced_aw = { version = "0.13", features = ["card"] }
-rfd = "0.16"
+rfd = "0.17"
 webbrowser = "1.0.6"
 box = {path = "box-api", package = "openapi"}
-tokio = "1.48.0"
-axum = "0.8.7"
+tokio = "1.49.0"
+axum = "0.8.8"
 anyhow = "1.0.100"
-serde = "1.0.228"
+serde = "1"
 serde_json = "1"
-reqwest = "0.12.24"
+reqwest = { version = "0.13", features = ["json", "form", "stream"] }
 rand = "0.9.2"
 port_check = "0.3.0"
 directories = "6.0.0"
-tokio-stream = {version = "0.1.17", features = ["fs", "sync"]}
+tokio-stream = {version = "0.1.18", features = ["fs", "sync"]}
 image = "0.25.9"
 tracing-subscriber = {version = "0.3.22", features = ["fmt", "env-filter"]}
 tracing-appender = "0.2.4"
@@ -28,8 +28,8 @@ iced_futures = "0.14.0"
 google-sheets4 = "7.0.0"
 async-trait = "0.1.89"
 derive_more = {version = "2.1.1", features = ["debug"]}
-magic-db = "0.3"  
-pure-magic = "0.1"
+magic-db = "0.4.1"  
+pure-magic = "0.2.1"
 
 [profile.dev.package."*"]
 opt-level = 3
