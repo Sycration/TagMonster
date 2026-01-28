@@ -114,7 +114,7 @@ pub(crate) fn title_bar(state: &State) -> Element<Message> {
             } else {
                 Some(Message::FileTreeMessage(FileTreeMessage::UpFolder))
             }
-        ), //TODO: on_press
+        ),
         Space::new().width(10),
         Text::new(name)
             .font(iced::font::Font::MONOSPACE)

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use rustls::crypto::CryptoProvider;
 use r#box::apis::authorization_api::PostOauth2TokenRefreshParams;
 use r#box::apis::configuration::Configuration;
 use r#box::models::AccessToken;
@@ -180,6 +181,7 @@ pub fn main() -> anyhow::Result<()> {
             std::env::set_var("RUST_LOG", "info");
         }
     }
+    CryptoProvider::install_default(rustls::crypto::ring::default_provider()).unwrap();
     let (tx, rx) = tokio::sync::broadcast::channel::<(String, tracing::Level)>(2usize.pow(16));
     let log_guard = log::init_logging(tx)?;
     let rx = std::sync::Arc::new(std::sync::Mutex::new(Some(rx)));
@@ -294,7 +296,6 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
                     async move {
                         retrieve::<ProgramSettingsState>(&CONFIG_DIR, "settings")
                             .await
-                            .inspect(|e|{dbg!(e);})
                             .unwrap_or_default()
                     }
                 },

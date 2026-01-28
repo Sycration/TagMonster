@@ -25,6 +25,7 @@ tracing-appender = "0.2.4"
 tracing = "0.1.44"
 atty = "0.2.14"
 iced_futures = "0.14.0"
+rustls = {version = "0.23", features = ["aws-lc-rs"]}
 google-sheets4 = "7.0.0"
 async-trait = "0.1.89"
 derive_more = {version = "2.1.1", features = ["debug"]}
