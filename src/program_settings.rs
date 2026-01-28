@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct ProgramSettingsState {
-    box_key: String,
-    box_secret: String,
+    pub box_key: String,
+    pub box_secret: String,
     pub gapi_key: String,
     pub gapi_secret: String,
 }

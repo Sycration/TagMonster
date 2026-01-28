@@ -53,6 +53,7 @@ use tokio::sync::broadcast::Receiver;
 use tokio_stream::wrappers::ReadDirStream;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
+use tracing::info;
 use tracing::warn;
 
 use crate::file_tree::FileTreeState;
@@ -74,6 +75,7 @@ mod project_settings;
 mod screens;
 mod subwindows;
 mod top_bar;
+mod make_sheet;
 
 mod file_tree;
 mod project;
@@ -134,6 +136,12 @@ struct State {
 }
 
 pub static TEMPLATE_ID: &str = "1q_tfznc0LUGesvm2Yb5EqUCdhhpimJFLUkrZZJ8XvWY";
+
+pub type SheetsHub = google_sheets4::Sheets<
+        google_sheets4::hyper_rustls::HttpsConnector<
+            google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
+        >,
+    >;
 
 static CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let cd = directories::ProjectDirs::from("org", "GenEq", "TagMonster")
@@ -254,6 +262,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
             state.panes = flist.0;
 
             Task::perform(
+                // Load projects from config dir
                 async {
                     let rd = tokio::fs::read_dir(CONFIG_DIR.join("projects")).await;
                     match rd {
@@ -285,6 +294,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
                     async move {
                         retrieve::<ProgramSettingsState>(&CONFIG_DIR, "settings")
                             .await
+                            .inspect(|e|{dbg!(e);})
                             .unwrap_or_default()
                     }
                 },
@@ -348,11 +358,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::InitBoxAccessToken(token_opt) => {
-            if let Some(t) = &token_opt {
-                state.box_config.oauth_access_token = t.access_token.clone();
-            }
-            state.box_token = token_opt;
-            Task::none()
+            init_box(state, token_opt)
         }
         Message::InitGoogleToken => {
             if !state.program_set_state.gapi_key.is_empty()
@@ -398,6 +404,66 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         },
     }
+}
+
+//TODO Figure out why the generated Box code doesn't work for refreshing tokens
+fn init_box(state: &mut State, token_opt: Option<AccessToken>) -> Task<Message> {
+    if let Some(token) = token_opt.as_ref() {
+        if let Some(refresh_token) = &token.refresh_token {
+            let refresh_token = refresh_token.clone();
+            let box_key = state.program_set_state.box_key.clone();
+            let box_secret = state.program_set_state.box_secret.clone();
+            return Task::perform(
+                async move {
+                    let client = reqwest::Client::new();
+                    let mut params = reqwest::Client::new()
+                        .post("https://api.box.com/oauth2/token")
+                        .form(&[
+                            ("grant_type", "refresh_token"),
+                            ("refresh_token", &refresh_token),
+                            ("client_id", &box_key),
+                            ("client_secret", &box_secret),
+                        ]);
+
+                    let resp = client
+                        .execute(params.build().unwrap())
+                        .await;
+
+                    match resp {
+                        Ok(r) => {
+                            match r.json::<AccessToken>().await {
+                                Ok(new_token) => {
+                                    info!("Refreshed Box token successfully");
+                                    persist::persist(
+                                        &new_token,
+                                        &CONFIG_DIR,
+                                        "box_auth",
+                                    ).await.ok();
+                                    Some(new_token)
+                                }
+                                Err(e) => {
+                                    warn!("Failed to refresh Box token: {e}");
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to refresh Box token: {e}");
+                            None
+                        }
+                    }
+                },
+                |result| {
+                    if let Some(t) = result {
+                        Message::ProgSetMessage(program_settings::ProgramSettingsMessage::LoginBox(Ok(t)))
+                    } else {
+                        Message::None
+                    }
+                },
+            );
+        }
+    }
+    Task::none()
 }
 
 fn view(state: &State, window_id: window::Id) -> Element<Message> {
