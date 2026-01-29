@@ -5,6 +5,7 @@ use std::{
     usize,
 };
 
+use crate::make_sheet::create_file_names;
 use crate::make_sheet::create_filetype_tags;
 use crate::make_sheet::create_folder_names;
 use crate::{
@@ -98,95 +99,92 @@ pub(crate) fn close_project(state: &mut State) -> Task<Message> {
     Task::none()
 }
 
+fn fetch_children(
+    configuration: r#box::apis::configuration::Configuration,
+    folder_id: String,
+    hostname: String,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Node>, String>> + Send>> {
+    Box::pin(async move {
+        let listing = r#box::apis::folders_api::get_folders_id_items(
+            &configuration,
+            GetFoldersIdItemsParams {
+                folder_id: folder_id.clone(),
+                fields: None,
+                boxapi: None,
+                marker: None,
+                usemarker: None,
+                sort: None,
+                direction: None,
+                offset: None,
+                limit: None,
+            },
+        )
+        .await
+        .map_err(|e| format!("Box API error listing folder {}: {}", folder_id, e))?;
+
+        let entries = listing.entries.unwrap_or_default();
+        let mut nodes: Vec<Node> = Vec::with_capacity(entries.len());
+
+        let mut folder_idx = 0;
+        let mut file_idx = 0;
+
+        info!(
+            "Fetching children of folder {}: {} entries",
+            folder_id,
+            entries.len()
+        );
+
+        for (idx, entry) in entries.into_iter().enumerate() {
+            match entry {
+                r#box::models::Item::FileFull(f) => {
+                    nodes.push(Node {
+                        name: f.name.unwrap_or_else(|| "UNNAMED FILE".to_string()),
+                        web_link: format!("{}/file/{}", hostname.trim_end_matches('/'), &f.id),
+                        id: f.id,
+                        idx: file_idx,
+                        file_type: InternalType::File,
+                        children: None,
+                    });
+                    file_idx += 1;
+                }
+                r#box::models::Item::FolderMini(f) => {
+                    let child_node =
+                        fetch_children(configuration.clone(), f.id.clone(), hostname.clone())
+                            .await?;
+                    nodes.push(Node {
+                        name: f.name.unwrap_or_else(|| "UNNAMED FOLDER".to_string()),
+                        web_link: format!("{}/folder/{}", hostname.trim_end_matches('/'), &f.id),
+                        id: f.id,
+                        idx: folder_idx,
+                        file_type: InternalType::Folder,
+                        children: Some(child_node),
+                    });
+                    folder_idx += 1;
+                }
+                r#box::models::Item::WebLink(f) => {
+                    nodes.push(Node {
+                        name: f.name.unwrap_or_else(|| "UNNAMED LINK".to_string()),
+                        web_link: format!("{}/web_link/{}", hostname.trim_end_matches('/'), &f.id),
+                        id: f.id,
+                        idx: file_idx,
+                        file_type: InternalType::Link,
+                        children: None,
+                    });
+                    file_idx += 1;
+                }
+            };
+        }
+
+        Ok(nodes)
+    })
+}
+
 async fn build_folder_tree(
     configuration: r#box::apis::configuration::Configuration,
     folder_id: String,
     hostname: String,
 ) -> Result<Node, String> {
     use r#box::apis::folders_api::GetFoldersIdItemsParams;
-
-    fn fetch_children(
-        configuration: r#box::apis::configuration::Configuration,
-        folder_id: String,
-        hostname: String,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Node>, String>> + Send>>
-    {
-        Box::pin(async move {
-            let listing = r#box::apis::folders_api::get_folders_id_items(
-                &configuration,
-                GetFoldersIdItemsParams {
-                    folder_id: folder_id.clone(),
-                    fields: None,
-                    boxapi: None,
-                    marker: None,
-                    usemarker: None,
-                    sort: None,
-                    direction: None,
-                    offset: None,
-                    limit: None,
-                },
-            )
-            .await
-            .map_err(|e| format!("Box API error listing folder {}: {}", folder_id, e))?;
-
-            let entries = listing.entries.unwrap_or_default();
-            let mut nodes: Vec<Node> = Vec::with_capacity(entries.len());
-
-            let mut folder_idx = 0;
-            let mut file_idx = 0;
-
-            for (idx, entry) in entries.into_iter().enumerate() {
-                match entry {
-                    r#box::models::Item::FileFull(f) => {
-                        nodes.push(Node {
-                            name: f.name.unwrap_or_else(|| "UNNAMED FILE".to_string()),
-                            web_link: format!("{}/file/{}", hostname.trim_end_matches('/'), &f.id),
-                            id: f.id,
-                            idx: file_idx,
-                            file_type: InternalType::File,
-                            children: None,
-                        });
-                        file_idx += 1;
-                    }
-                    r#box::models::Item::FolderMini(f) => {
-                        let child_node =
-                            fetch_children(configuration.clone(), f.id.clone(), hostname.clone())
-                                .await?;
-                        nodes.push(Node {
-                            name: f.name.unwrap_or_else(|| "UNNAMED FOLDER".to_string()),
-                            web_link: format!(
-                                "{}/folder/{}",
-                                hostname.trim_end_matches('/'),
-                                &f.id
-                            ),
-                            id: f.id,
-                            idx: folder_idx,
-                            file_type: InternalType::Folder,
-                            children: Some(child_node),
-                        });
-                        folder_idx += 1;
-                    }
-                    r#box::models::Item::WebLink(f) => {
-                        nodes.push(Node {
-                            name: f.name.unwrap_or_else(|| "UNNAMED LINK".to_string()),
-                            web_link: format!(
-                                "{}/web_link/{}",
-                                hostname.trim_end_matches('/'),
-                                &f.id
-                            ),
-                            id: f.id,
-                            idx: file_idx,
-                            file_type: InternalType::Link,
-                            children: None,
-                        });
-                        file_idx += 1;
-                    }
-                };
-            }
-
-            Ok(nodes)
-        })
-    }
 
     // Build the root node for the provided folder id
     let root_listing = r#box::apis::folders_api::get_folders_id(
@@ -286,11 +284,7 @@ fn build_tree(state: &mut State, project: &Project) -> Task<Message> {
             .await
             {
                 Ok(tree) => {
-                    tracing::info!(
-                        "Built project tree for {}: {:#?}",
-                        project_future.name,
-                        tree
-                    );
+                    tracing::info!("Built project tree for {}", project_future.name,);
                     // Optionally persist the tree to disk for later use
                     let proj_name = project_future.name.clone();
                     let _ = persist::persist(
@@ -679,52 +673,6 @@ fn make_sheet(state: &mut State, project: Project, tree: Node) -> Task<Message> 
         },
         |_| Message::None,
     )
-}
-
-// Write file and link names with hyperlinks
-async fn create_file_names(
-    project: &Project,
-    hub: google_sheets4::Sheets<
-        google_sheets4::hyper_rustls::HttpsConnector<
-            google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
-        >,
-    >,
-    flat: &Vec<FlatItem>,
-) {
-    let futures = flat.into_iter().enumerate().skip(1).map(|(i, node)| {
-        let safe_title = project.name.replace('\'', "''");
-        let hub = hub.clone();
-        async move {
-            let row = 2 + (i - 1);
-
-            match node.file_type {
-                InternalType::File | InternalType::Link => {
-                    let esc_name = node.name.replace('"', "\\\"");
-                    let esc_url = node.web_link.replace('"', "\\\"");
-                    let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
-                    let range = format!("'{}'!D{}", safe_title, row);
-                    let vr = google_sheets4::api::ValueRange {
-                        range: Some(range.clone()),
-                        major_dimension: None,
-                        values: Some(vec![vec![serde_json::Value::String(formula)]]),
-                    };
-
-                    match hub
-                        .spreadsheets()
-                        .values_update(vr, &project.spreadsheet_id, &range)
-                        .value_input_option("USER_ENTERED")
-                        .doit()
-                        .await
-                    {
-                        Ok((_r, _)) => tracing::info!("Wrote file link to {}", range),
-                        Err(e) => tracing::error!("Failed to write {}: {}", range, e),
-                    }
-                }
-                InternalType::Folder => {}
-            }
-        }
-    });
-    join_all(futures).await;
 }
 
 pub(crate) fn new_project_view(state: &State) -> Element<Message> {

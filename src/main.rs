@@ -137,7 +137,7 @@ struct State {
 }
 
 pub static TEMPLATE_ID: &str = "1q_tfznc0LUGesvm2Yb5EqUCdhhpimJFLUkrZZJ8XvWY";
-
+pub const BATCH_SIZE: usize = 100; 
 pub type SheetsHub = google_sheets4::Sheets<
         google_sheets4::hyper_rustls::HttpsConnector<
             google_sheets4::hyper_util::client::legacy::connect::HttpConnector,

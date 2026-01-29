@@ -8,7 +8,7 @@ use reqwest::Client;
 use tokio_stream::StreamExt;
 use tracing::{error, warn, debug};
 
-use crate::{SheetsHub, TEMPLATE_ID, project::Project, project_page::{FlatItem, InternalType, Node}};
+use crate::{BATCH_SIZE, SheetsHub, TEMPLATE_ID, project::Project, project_page::{FlatItem, InternalType, Node}};
 
 
 pub async fn setup_sheet_basics(
@@ -100,69 +100,70 @@ pub async fn create_folder_names(
     >,
     flat: &Vec<FlatItem>,
 ) {
-    // Write folder hyperlinks and "Loose files:" markers in one pass.
-    let futures = flat.into_iter().enumerate().skip(1).map(|(i, node)| {
-        let safe_title = project.name.replace('\'', "''");
-        let hub = hub.clone();
-        async move {
-            let row = 2 + (i - 1);
+    let safe_title = project.name.replace('\'', "''");
+    let mut batch_values: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut batch_start_row = 2;
 
-            match node.file_type {
-                InternalType::Folder => {
-                    let esc_name = node.name.replace('"', "\\\"");
-                    let esc_url = node.web_link.replace('"', "\\\"");
-                    let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
-                    let folder_info =
-                        format!("({} Folders) ({} Files)", node.children.0, node.children.1);
-                    let range = format!("'{}'!B{}:C{}", safe_title, row, row);
-                    let vr = google_sheets4::api::ValueRange {
-                        range: Some(range.clone()),
-                        major_dimension: None,
-                        values: Some(vec![vec![
-                            serde_json::Value::String(folder_info),
-                            serde_json::Value::String(formula),
-                        ]]),
-                    };
 
-                    match hub
-                        .spreadsheets()
-                        .values_update(vr, &project.spreadsheet_id, &range)
-                        .value_input_option("USER_ENTERED")
-                        .doit()
-                        .await
-                    {
-                        Ok((_r, _)) => tracing::info!("Wrote folder link to {}", range),
-                        Err(e) => tracing::error!("Failed to write {}: {}", range, e),
-                    }
-                }
-                InternalType::File | InternalType::Link => {
-                    if node.idx == 0 {
-                        let range = format!("'{}'!C{}", safe_title, row);
-                        let vr = google_sheets4::api::ValueRange {
-                            range: Some(range.clone()),
-                            major_dimension: None,
-                            values: Some(vec![vec![serde_json::Value::String(
-                                "Loose files:".to_string(),
-                            )]]),
-                        };
-
-                        match hub
-                            .spreadsheets()
-                            .values_update(vr, &project.spreadsheet_id, &range)
-                            .value_input_option("USER_ENTERED")
-                            .doit()
-                            .await
-                        {
-                            Ok((_r, _)) => tracing::info!("Wrote marker to {}", range),
-                            Err(e) => tracing::error!("Failed to write {}: {}", range, e),
-                        }
-                    }
+    for (i, node) in flat.into_iter().enumerate().skip(1) {
+        
+        let (col_b, col_c) = match node.file_type {
+            InternalType::Folder => {
+                let esc_name = node.name.replace('"', "\\\"");
+                let esc_url = node.web_link.replace('"', "\\\"");
+                let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
+                let folder_info =
+                    format!("({} Folders) ({} Files)", node.children.0, node.children.1);
+                (
+                    serde_json::Value::String(folder_info),
+                    serde_json::Value::String(formula),
+                )
+            }
+            InternalType::File | InternalType::Link => {
+                if node.idx == 0 {
+                    (
+                        serde_json::Value::Null,
+                        serde_json::Value::String("Loose files:".to_string()),
+                    )
+                } else {
+                    (serde_json::Value::Null, serde_json::Value::Null)
                 }
             }
-        }
-    });
+        };
 
-    join_all(futures).await;
+        batch_values.push(vec![col_b, col_c]);
+
+        // Flush batch when we reach batch size or at the end
+        if batch_values.len() >= BATCH_SIZE || i == flat.len() - 1 {
+            let batch_end_row = batch_start_row + batch_values.len() - 1;
+            let range = format!("'{}'!B{}:C{}", safe_title, batch_start_row, batch_end_row);
+            let vr = google_sheets4::api::ValueRange {
+                range: Some(range.clone()),
+                major_dimension: None,
+                values: Some(batch_values.clone()),
+            };
+
+            match hub
+                .spreadsheets()
+                .values_update(vr, &project.spreadsheet_id, &range)
+                .value_input_option("USER_ENTERED")
+                .doit()
+                .await
+            {
+                Ok((_r, _)) => {
+                    tracing::info!(
+                        "Wrote folder links and markers to {}:{}",
+                        batch_start_row,
+                        batch_end_row
+                    );
+                }
+                Err(e) => tracing::error!("Failed to write batch {}: {}", range, e),
+            }
+
+            batch_start_row += batch_values.len();
+            batch_values.clear();
+        }
+    }
 }
 
 pub async fn create_filetype_tags(
@@ -177,58 +178,57 @@ pub async fn create_filetype_tags(
 ) {
     match magic_db::load() {
         Ok(db) => {
-            {
-                // Iterate flattened entries (skip the root at index 0). Place results starting at row 2.
-                let client = reqwest::Client::new();
-                let futures = flat.into_iter().enumerate().skip(1).map(|(i, node)| {
-                    let box_config = box_config.clone();
-                    let client = client.clone();
-                    let db = db.clone();
-                    let safe_title = project.name.replace('\'', "''");
-                    let hub = hub.clone();
-                    let id = node.id.clone();
-                    async move {
-                        let row = 2 + (i - 1); // top-level is row 1, first child -> row 2
+            let client = reqwest::Client::new();
+            let safe_title = project.name.replace('\'', "''");
+            let mut batch_values: Vec<Vec<serde_json::Value>> = Vec::new();
+            let mut batch_start_row = 2;
 
-                        let value = match node.file_type {
-                            InternalType::Folder => {
-                                // skip folders
-                                return;
-                            }
-                            InternalType::Link => "Web link".to_string(),
-                            InternalType::File => {
-                                match detect_file_type(node, box_config, client, db, id).await {
-                                    Some(value) => value,
-                                    None => return,
-                                }
-                            }
-                        };
+            for (i, node) in flat.into_iter().enumerate().skip(1) {
+                let row = 2 + (i - 1);
 
-                        // Write the result into column G for this row
-                        let range = format!("'{}'!G{}", safe_title, row);
-                        let vr = google_sheets4::api::ValueRange {
-                            range: Some(range.clone()),
-                            major_dimension: None,
-                            values: Some(vec![vec![serde_json::Value::String(value)]]),
-                        };
-                        match hub
-                            .spreadsheets()
-                            .values_update(vr, &project.spreadsheet_id, &range)
-                            .value_input_option("RAW")
-                            .doit()
-                            .await
-                        {
-                            Ok((_r, _)) => {
-                                tracing::info!("Wrote file type to {}", range);
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to write {}: {}", range, e);
-                            }
+                let value = match node.file_type {
+                    InternalType::Folder => {
+                        serde_json::Value::Null
+                    }
+                    InternalType::Link => serde_json::Value::String("Web link".to_string()),
+                    InternalType::File => {
+                        match detect_file_type(node, box_config.clone(), client.clone(), db.clone(), node.id.clone()).await {
+                            Some(value) => serde_json::Value::String(value),
+                            None => serde_json::Value::Null,
                         }
                     }
-                });
+                };
 
-                join_all(futures).await;
+                batch_values.push(vec![value]);
+
+                // Flush batch when we reach batch size or at the end
+                if batch_values.len() >= BATCH_SIZE || i == flat.len() - 1 {
+                    let batch_end_row = batch_start_row + batch_values.len() - 1;
+                    let range = format!("'{}'!G{}:G{}", safe_title, batch_start_row, batch_end_row);
+                    let vr = google_sheets4::api::ValueRange {
+                        range: Some(range.clone()),
+                        major_dimension: None,
+                        values: Some(batch_values.clone()),
+                    };
+
+                    match hub
+                        .spreadsheets()
+                        .values_update(vr, &project.spreadsheet_id, &range)
+                        .value_input_option("RAW")
+                        .doit()
+                        .await
+                    {
+                        Ok((_r, _)) => {
+                            tracing::info!("Wrote file types to {}:G{}", batch_start_row, batch_end_row);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to write batch {}: {}", range, e);
+                        }
+                    }
+
+                    batch_start_row += batch_values.len();
+                    batch_values.clear();
+                }
             }
         }
         Err(e) => {
@@ -309,6 +309,67 @@ pub async fn detect_file_type(
         }
     };
     Some(detected)
+}
+
+// Write file and link names with hyperlinks
+pub async fn create_file_names(
+    project: &Project,
+    hub: google_sheets4::Sheets<
+        google_sheets4::hyper_rustls::HttpsConnector<
+            google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
+        >,
+    >,
+    flat: &Vec<FlatItem>,
+) {
+    let safe_title = project.name.replace('\'', "''");
+    let mut batch_values: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut batch_start_row = 2;
+
+    for (i, node) in flat.into_iter().enumerate().skip(1) {
+        let row = 2 + (i - 1);
+
+        let formula = match node.file_type {
+            InternalType::File | InternalType::Link => {
+                let esc_name = node.name.replace('"', "\\\"");
+                let esc_url = node.web_link.replace('"', "\\\"");
+                serde_json::Value::String(format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name))
+            }
+            InternalType::Folder => serde_json::Value::Null,
+        };
+
+        batch_values.push(vec![formula]);
+
+        // Flush batch when we reach batch size or at the end
+        if batch_values.len() >= BATCH_SIZE || i == flat.len() - 1 {
+            let batch_end_row = batch_start_row + batch_values.len() - 1;
+            let range = format!("'{}'!D{}:D{}", safe_title, batch_start_row, batch_end_row);
+            let vr = google_sheets4::api::ValueRange {
+                range: Some(range.clone()),
+                major_dimension: None,
+                values: Some(batch_values.clone()),
+            };
+
+            match hub
+                .spreadsheets()
+                .values_update(vr, &project.spreadsheet_id, &range)
+                .value_input_option("USER_ENTERED")
+                .doit()
+                .await
+            {
+                Ok((_r, _)) => {
+                    tracing::info!(
+                        "Wrote file links to {}:{}",
+                        batch_start_row,
+                        batch_end_row
+                    );
+                }
+                Err(e) => tracing::error!("Failed to write batch {}: {}", range, e),
+            }
+
+            batch_start_row += batch_values.len();
+            batch_values.clear();
+        }
+    }
 }
 
 // Attempt to rename the newly copied sheet to the project name

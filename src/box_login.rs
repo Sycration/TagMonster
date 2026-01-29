@@ -139,7 +139,7 @@ async fn handle_callback(
 
     // Check for error first
     if let Some(error) = params.get("error") {
-        eprintln!(
+        error!(
             "OAuth error: {} - {:?}",
             error,
             params.get("error_description")
@@ -152,7 +152,7 @@ async fn handle_callback(
     if let (Some(code), Some(state)) = (params.get("code"), params.get("state")) {
         // Verify state matches what we expect
         if state != &expected_state {
-            eprintln!("State mismatch: expected {}, got {}", expected_state, state);
+            error!("State mismatch: expected {}, got {}", expected_state, state);
             let _ = code_sender.send(None);
             return std::result::Result::Ok(Html(html_error).into_response());
         }
@@ -165,11 +165,11 @@ async fn handle_callback(
         {
             std::result::Result::Ok(Html(html_success).into_response())
         } else {
-            eprintln!("Failed to send authorization code");
+            error!("Failed to send authorization code");
             std::result::Result::Ok(Html(html_error).into_response())
         }
     } else {
-        eprintln!("Missing code or state in callback");
+        error!("Missing code or state in callback");
         let _ = code_sender.send(None);
         std::result::Result::Ok(Html(html_error).into_response())
     }
