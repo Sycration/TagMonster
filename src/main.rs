@@ -417,7 +417,7 @@ fn init_box(state: &mut State, token_opt: Option<AccessToken>) -> Task<Message> 
             return Task::perform(
                 async move {
                     let client = reqwest::Client::new();
-                    let mut params = reqwest::Client::new()
+                    let params = reqwest::Client::new()
                         .post("https://api.box.com/oauth2/token")
                         .form(&[
                             ("grant_type", "refresh_token"),
@@ -427,6 +427,7 @@ fn init_box(state: &mut State, token_opt: Option<AccessToken>) -> Task<Message> 
                         ]);
 
                     let resp = client
+                        // This never changes, so we can unwrap
                         .execute(params.build().unwrap())
                         .await;
 

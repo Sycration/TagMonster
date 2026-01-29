@@ -76,8 +76,7 @@ pub fn handle_prog_settings(state: &mut State, event: ProgramSettingsMessage) ->
         ProgramSettingsMessage::LoginBoxButton => {
             let key = state.program_set_state.box_key.to_string();
             let secret = state.program_set_state.box_secret.to_string();
-            let file = CONFIG_DIR.join("box_auth.json");
-            Task::perform(box_login::get_key(key, secret, file, false), |f| {
+            Task::perform(box_login::get_key(key, secret,  false), |f| {
                 Message::ProgSetMessage(ProgramSettingsMessage::LoginBox(
                     f.map_err(|e| e.to_string()),
                 ))

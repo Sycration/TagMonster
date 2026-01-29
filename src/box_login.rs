@@ -31,30 +31,20 @@ use tokio::{
 use anyhow::{Ok, Result};
 use tracing::{debug, error};
 
-const TOKEN_URL: &str = "https://api.box.com/oauth2/token";
+use crate::{CONFIG_DIR, persist::{self, retrieve}};
 
-pub async fn get_key(
-    id: String,
-    secret: String,
-    config_path: PathBuf,
-    read_cache: bool,
-) -> anyhow::Result<AccessToken> {
+const TOKEN_URL: &str = "https://api.box.com/oauth2/token";
+const FILE_NAME: &str = "box_auth";
+
+pub async fn get_key(id: String, secret: String, read_cache: bool) -> anyhow::Result<AccessToken> {
     let client_id = id;
     let client_secret = secret;
 
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .append(true)
-        .create(true)
-        .open(config_path)
-        .await?;
-
-    let mut s = String::new();
-    if read_cache {
-        file.read_to_string(&mut s).await?;
-    }
-    let token: AccessToken = match serde_json::from_str::<AccessToken>(&s) {
+    let token = match if read_cache {
+        retrieve::<AccessToken>(&CONFIG_DIR, FILE_NAME).await
+    } else {
+        Err(anyhow::anyhow!("Cache disabled"))
+    } {
         std::result::Result::Ok(t) => t,
         Err(_) => {
             let port = free_local_port_in_range(8080..=8085)
@@ -105,15 +95,17 @@ pub async fn get_key(
                 None => return Err(anyhow::anyhow!("Error receiving authentication code")),
             } {
                 std::result::Result::Ok(k) => {
-                    file.set_len(0).await?;
-                    let token_json = serde_json::to_string_pretty(&k)?;
-                    file.write_all(token_json.as_bytes()).await?;
+                    if let Err(e) = persist::persist(&k, &CONFIG_DIR, FILE_NAME).await {
+                        error!("Failed to persist Box token: {}", e);
+                    }
                     k
                 }
                 Err(e) => {
                     return Err(e);
                 }
             };
+
+
             k
         }
     };
