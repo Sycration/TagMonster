@@ -20,6 +20,7 @@ In the Program Settings window, you will need to sign in to both the Box and Goo
 - [x] Incomplete spreadsheet generation
 - [ ] Offline folder support
 - [x] Internal file browser
+    - [ ] Better file browser - Custom widget or [this library?](https://github.com/EmmanuelDodoo/modav_widgets)
 - [ ] Tagging and notes
 - [ ] Internal file viewer
 - [ ] Local spreadsheet export
