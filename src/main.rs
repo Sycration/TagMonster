@@ -397,6 +397,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StatuslineGo(action) => match action {
             Action::Move(_) => Task::none(),
             Action::Edit(_) => Task::none(),
+            Action::Click(_) => Task::none(),
             //Action::Drag(_) => {Task::none()},
             //Action::Scroll { lines: _ } => {Task::none()},
             a @ _ => {

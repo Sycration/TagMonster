@@ -7,14 +7,17 @@ use r#box::{
     apis::{configuration, folders_api::GetFoldersIdItemsParams},
     models::{FolderFull, FolderMini, Item, Items},
 };
+use google_sheets4::yup_oauth2::error;
 use iced::{
     Alignment::Center,
     Element,
     Length::{self, Fill},
     Task,
     advanced::{Widget, widget::Text},
+    wgpu::hal::auxil::db,
     widget::{Button, Column, Row, Space, button, column, row, text},
 };
+use tracing::error;
 use tracing::info;
 
 use crate::{Message, State, update};
@@ -131,23 +134,29 @@ pub(crate) fn title_bar(state: &State) -> Element<Message> {
 }
 
 pub(crate) fn file_tree_handle(state: &mut State, event: FileTreeMessage) -> Task<Message> {
+    state.file_tree_state.contents.clear();
+
     match event {
         FileTreeMessage::InitFolder(id) => {
             state.file_tree_state.parents.clear();
-            update(
-                state,
-                Message::FileTreeMessage(FileTreeMessage::OpenFolder(id)),
-            )
+            state.file_tree_state.current_folder.id = id.to_string();
+            open_folder_web(state, id)
         }
-        FileTreeMessage::OpenFolder(id) => open_folder_web(state, id),
+        FileTreeMessage::OpenFolder(id) => {
+            let current_id = state
+                .file_tree_state
+                .current_folder
+                .id
+                .parse::<usize>()
+                .unwrap();
+            state.file_tree_state.parents.push(current_id);
+            open_folder_web(state, id)
+        }
         FileTreeMessage::FolderReceived(folder) => folder_received_web(state, folder),
         FileTreeMessage::Update => update_web(state),
         FileTreeMessage::UpFolder => {
             if let Some(parent_id) = state.file_tree_state.parents.pop() {
-                update(
-                    state,
-                    Message::FileTreeMessage(FileTreeMessage::OpenFolder(parent_id)),
-                )
+                open_folder_web(state, parent_id)
             } else {
                 Task::none()
             }
@@ -160,34 +169,13 @@ pub(crate) fn file_tree_handle(state: &mut State, event: FileTreeMessage) -> Tas
 }
 
 fn folder_received_web(state: &mut State, folder: FolderFull) -> Task<Message> {
-    if let Some(project) = &state.project
-        && let Ok(new_folder_id) = folder.id.parse::<usize>()
+    if let Some(_project) = &state.project
+        && let Ok(_new_folder_id) = folder.id.parse::<usize>()
     {
-        if project.top_folder_id == new_folder_id {
-            state.file_tree_state.parents.clear();
-        } else if state
-            .file_tree_state
-            .contents
-            .iter()
-            .filter_map(|i| {
-                if let Item::FolderMini(f) = i {
-                    Some(f)
-                } else {
-                    None
-                }
-            })
-            .any(|i| i.id == new_folder_id.to_string())
-        {
-            state
-                .file_tree_state
-                .parents
-                .push(state.file_tree_state.current_folder.id.parse().unwrap_or(0));
-        } else {
-            return Task::none();
-        }
         state.file_tree_state.current_folder = folder;
         update(state, Message::FileTreeMessage(FileTreeMessage::Update))
     } else {
+        error!("Invalid folder ID: {}", folder.id);
         Task::none()
     }
 }

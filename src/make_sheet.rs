@@ -10,7 +10,7 @@ use tracing::{error, warn, debug};
 
 use crate::{BATCH_SIZE, SheetsHub, TEMPLATE_ID, project::Project, project_page::{FlatItem, InternalType, Node}};
 
-
+// Setup basic sheet contents after copying template
 pub async fn setup_sheet_basics(
     project: &Project,
     tree: Node,
@@ -91,6 +91,7 @@ pub async fn setup_sheet_basics(
     }
 }
 
+// Write folder labels and hyperlinks
 pub async fn create_folder_names(
     project: &Project,
     hub: google_sheets4::Sheets<
@@ -166,6 +167,7 @@ pub async fn create_folder_names(
     }
 }
 
+// Write file types to column G
 pub async fn create_filetype_tags(
     project: &Project,
     hub: google_sheets4::Sheets<
@@ -240,6 +242,7 @@ pub async fn create_filetype_tags(
     }
 }
 
+// Download a file's content and detect its type
 pub async fn detect_file_type(
     node: &FlatItem,
     box_config: r#box::apis::configuration::Configuration,
