@@ -2,28 +2,90 @@ use std::io::Cursor;
 
 use r#box::apis::downloads_api::{GetFilesIdContentParams, get_files_id_content};
 use google_sheets4::{FieldMask, api::BatchUpdateSpreadsheetRequest};
-use iced::{futures::future::join_all};
+use iced::{Task, futures::future::join_all};
 use pure_magic::MagicDb;
 use reqwest::Client;
 use tokio_stream::StreamExt;
-use tracing::{error, warn, debug};
+use tracing::{debug, error, info, warn};
 
-use crate::{BATCH_SIZE, SheetsHub, TEMPLATE_ID, project::Project, project_page::{FlatItem, InternalType, Node}};
+use crate::{
+    BATCH_SIZE, CONFIG_DIR, Message, SheetsHub, State, TEMPLATE_ID, export::flatten_node, persist, project::Project, project_page::{InternalType, Node}, source::RequiredData
+};
+
+pub async fn make_sheet(req_data: &RequiredData, hub: Option<SheetsHub>, project: Project, entries: Vec<Node>, spreadsheet_id: &str) -> anyhow::Result<()> {
+            let hub = if let Some(hub) = hub {
+                hub
+            } else {
+                tracing::error!("Not logged in to Google API");
+                anyhow::bail!("Not logged in to Google API");
+            };
+
+            let mut tree = project.source.get_info(req_data, project.source.get_top_folder_id(), InternalType::Folder).await?;
+            tree.child_counts = Some(Default::default());
+            for child in entries.iter() {
+                if child.file_type == InternalType::Folder {
+                    tree.child_counts.get_or_insert(Default::default()).folder_count += 1;
+                } else {
+                    tree.child_counts.get_or_insert(Default::default()).file_count += 1;
+                }
+            }
+            tree.children = Some(entries);
+            
+            let mut flat: Vec<Node> = Vec::new();
+            flatten_node(&tree, &mut flat);
+            tracing::info!(
+                "Flattened tree for {}: {} entries",
+                project.name,
+                flat.len()
+            );
+            // persist flattened list for later use
+            let _ = persist::persist(
+                &flat,
+                &CONFIG_DIR.join("projects").join(&project.name),
+                &(project.name.clone() + "_flat"),
+            )
+            .await;
+            let copy_req = google_sheets4::api::CopySheetToAnotherSpreadsheetRequest {
+                destination_spreadsheet_id: Some(spreadsheet_id.to_string()),
+            };
+            match hub
+                .spreadsheets()
+                .sheets_copy_to(copy_req, TEMPLATE_ID, 0)
+                .doit()
+                .await
+            {
+                Ok((_resp, props)) => {
+                    setup_sheet_basics(&project, tree, &hub, &spreadsheet_id, props).await;
+                    tokio::join!(
+                        create_filetype_tags(&project, hub.clone(), &req_data, &flat, &spreadsheet_id),
+                        create_folder_names(&project, hub.clone(), &flat, &spreadsheet_id),
+                        create_file_names(&project, hub.clone(), &flat, &spreadsheet_id),
+                    );
+                    info!("Done making sheet");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to copy template sheet: {}", e);
+                }
+            }
+            anyhow::Ok(())
+}
+
 
 // Setup basic sheet contents after copying template
 pub async fn setup_sheet_basics(
     project: &Project,
     tree: Node,
     hub: &SheetsHub,
+    spreadsheet_id: &str,
     props: google_sheets4::api::SheetProperties,
 ) {
     tracing::info!(
         "Copied template sheet 0 from {} into {}",
         TEMPLATE_ID,
-        project.spreadsheet_id
+        spreadsheet_id
     );
 
-    rename_new_sheet(project, hub.clone(), props).await;
+    rename_new_sheet(project, hub.clone(), props, spreadsheet_id).await;
 
     // Set B1 to "(x Folders) (y Files)" for top-level children, and C1 to a hyperlink to the top-level folder.
     let top_children: &[Node] = tree.children.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
@@ -52,7 +114,7 @@ pub async fn setup_sheet_basics(
 
     match hub
         .spreadsheets()
-        .values_update(vr_b1, project.spreadsheet_id.as_str(), &range_b1)
+        .values_update(vr_b1, spreadsheet_id, &range_b1)
         .value_input_option("USER_ENTERED")
         .doit()
         .await
@@ -66,7 +128,7 @@ pub async fn setup_sheet_basics(
     }
 
     let esc_name = project.name.replace('"', "\\\"");
-    let esc_url = project.box_url.replace('"', "\\\"");
+    let esc_url = project.source.get_top_folder_url().replace('"', "\\\"");
     let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
     let range_c1 = format!("'{}'!C1", safe_title);
     let vr_c1 = google_sheets4::api::ValueRange {
@@ -77,7 +139,7 @@ pub async fn setup_sheet_basics(
 
     match hub
         .spreadsheets()
-        .values_update(vr_c1, &project.spreadsheet_id, &range_c1)
+        .values_update(vr_c1, spreadsheet_id, &range_c1)
         .value_input_option("USER_ENTERED")
         .doit()
         .await
@@ -99,22 +161,21 @@ pub async fn create_folder_names(
             google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
         >,
     >,
-    flat: &Vec<FlatItem>,
+    flat: &Vec<Node>,
+    spreadsheet_id: &str
 ) {
     let safe_title = project.name.replace('\'', "''");
     let mut batch_values: Vec<Vec<serde_json::Value>> = Vec::new();
     let mut batch_start_row = 2;
 
-
     for (i, node) in flat.into_iter().enumerate().skip(1) {
-        
         let (col_b, col_c) = match node.file_type {
             InternalType::Folder => {
                 let esc_name = node.name.replace('"', "\\\"");
-                let esc_url = node.web_link.replace('"', "\\\"");
+                let esc_url = node.link.replace('"', "\\\"");
                 let formula = format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name);
                 let folder_info =
-                    format!("({} Folders) ({} Files)", node.children.0, node.children.1);
+                    format!("({} Folders) ({} Files)", node.child_counts.map(|c|c.folder_count).unwrap_or(0), node.child_counts.map(|c|c.file_count).unwrap_or(0));
                 (
                     serde_json::Value::String(folder_info),
                     serde_json::Value::String(formula),
@@ -146,7 +207,7 @@ pub async fn create_folder_names(
 
             match hub
                 .spreadsheets()
-                .values_update(vr, &project.spreadsheet_id, &range)
+                .values_update(vr, spreadsheet_id, &range)
                 .value_input_option("USER_ENTERED")
                 .doit()
                 .await
@@ -175,8 +236,9 @@ pub async fn create_filetype_tags(
             google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
         >,
     >,
-    box_config: r#box::apis::configuration::Configuration,
-    flat: &Vec<FlatItem>,
+    req_data: &RequiredData,
+    flat: &Vec<Node>,
+    spreadsheet_id: &str,
 ) {
     match magic_db::load() {
         Ok(db) => {
@@ -189,14 +251,15 @@ pub async fn create_filetype_tags(
                 let row = 2 + (i - 1);
 
                 let value = match node.file_type {
-                    InternalType::Folder => {
-                        serde_json::Value::Null
-                    }
+                    InternalType::Folder => serde_json::Value::Null,
                     InternalType::Link => serde_json::Value::String("Web link".to_string()),
                     InternalType::File => {
-                        match detect_file_type(node, box_config.clone(), client.clone(), db.clone(), node.id.clone()).await {
-                            Some(value) => serde_json::Value::String(value),
-                            None => serde_json::Value::Null,
+                        match project.source.get_file_type(req_data, &node, &db).await {
+                            Ok(value) => serde_json::Value::String(value),
+                            Err(e) => {
+                                warn!("Failed to detect file type for {}: {}", node.name, e);
+                                serde_json::Value::String("Unknown".to_string())
+                            }
                         }
                     }
                 };
@@ -215,13 +278,17 @@ pub async fn create_filetype_tags(
 
                     match hub
                         .spreadsheets()
-                        .values_update(vr, &project.spreadsheet_id, &range)
+                        .values_update(vr, spreadsheet_id, &range)
                         .value_input_option("RAW")
                         .doit()
                         .await
                     {
                         Ok((_r, _)) => {
-                            tracing::info!("Wrote file types to {}:G{}", batch_start_row, batch_end_row);
+                            tracing::info!(
+                                "Wrote file types to {}:G{}",
+                                batch_start_row,
+                                batch_end_row
+                            );
                         }
                         Err(e) => {
                             tracing::error!("Failed to write batch {}: {}", range, e);
@@ -242,78 +309,6 @@ pub async fn create_filetype_tags(
     }
 }
 
-// Download a file's content and detect its type
-pub async fn detect_file_type(
-    node: &FlatItem,
-    box_config: r#box::apis::configuration::Configuration,
-    client: Client,
-    db: MagicDb,
-    id: String,
-) -> Option<String> {
-    let resp = get_files_id_content(
-        &box_config,
-        GetFilesIdContentParams {
-            file_id: id,
-            range: Some(format!("bytes=0-{}", (100 * 1024))),
-            boxapi: None,
-            version: None,
-            access_token: None,
-        },
-    )
-    .await
-    .map(|f| f.url().to_owned());
-    let url = match resp {
-        Ok(url) => url,
-        Err(e) => {
-            error!("Failed to get file download URL: {}", e);
-            return None;
-        }
-    };
-    let token = match box_config.oauth_access_token.clone() {
-        Some(t) => t,
-        None => {
-            error!("Not logged in to Box");
-            return None;
-        }
-    };
-    let resp = match client.get(url.to_owned()).bearer_auth(&token).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            error!("Failed to download file {}: {}", node.name, e.to_string());
-            return None;
-        }
-    };
-    let mut buf = if let Some(l) = resp.content_length() {
-        Vec::with_capacity(l.try_into().unwrap_or(usize::MAX)) // We might be on 32 bit who knows
-    } else {
-        Vec::new()
-    };
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to download file {}: {}", &node.name, e);
-                return None;
-            }
-        };
-        buf.extend_from_slice(&chunk);
-    }
-    debug!("downloaded file {}", &node.name);
-    let mut cursor = Cursor::new(buf);
-    let detected = match db.best_magic(&mut cursor) {
-        Ok(result) => {
-            // pick the first sensible result if present
-            result.message()
-        }
-        Err(_) => {
-            warn!("Failed to analyze file {}", &node.name);
-            "Unknown".to_string()
-        }
-    };
-    Some(detected)
-}
-
 // Write file and link names with hyperlinks
 pub async fn create_file_names(
     project: &Project,
@@ -322,7 +317,8 @@ pub async fn create_file_names(
             google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
         >,
     >,
-    flat: &Vec<FlatItem>,
+    flat: &Vec<Node>,
+    spreadsheet_id: &str,
 ) {
     let safe_title = project.name.replace('\'', "''");
     let mut batch_values: Vec<Vec<serde_json::Value>> = Vec::new();
@@ -334,7 +330,7 @@ pub async fn create_file_names(
         let formula = match node.file_type {
             InternalType::File | InternalType::Link => {
                 let esc_name = node.name.replace('"', "\\\"");
-                let esc_url = node.web_link.replace('"', "\\\"");
+                let esc_url = node.link.replace('"', "\\\"");
                 serde_json::Value::String(format!("=HYPERLINK(\"{}\",\"{}\")", esc_url, esc_name))
             }
             InternalType::Folder => serde_json::Value::Null,
@@ -354,17 +350,13 @@ pub async fn create_file_names(
 
             match hub
                 .spreadsheets()
-                .values_update(vr, &project.spreadsheet_id, &range)
+                .values_update(vr, spreadsheet_id, &range)
                 .value_input_option("USER_ENTERED")
                 .doit()
                 .await
             {
                 Ok((_r, _)) => {
-                    tracing::info!(
-                        "Wrote file links to {}:{}",
-                        batch_start_row,
-                        batch_end_row
-                    );
+                    tracing::info!("Wrote file links to {}:{}", batch_start_row, batch_end_row);
                 }
                 Err(e) => tracing::error!("Failed to write batch {}: {}", range, e),
             }
@@ -384,6 +376,7 @@ async fn rename_new_sheet(
         >,
     >,
     props: google_sheets4::api::SheetProperties,
+    spreadsheet_id: &str,
 ) {
     let rename_req = BatchUpdateSpreadsheetRequest {
         requests: Some(vec![google_sheets4::api::Request {
@@ -401,7 +394,7 @@ async fn rename_new_sheet(
     };
     match hub
         .spreadsheets()
-        .batch_update(rename_req, &project.spreadsheet_id)
+        .batch_update(rename_req, spreadsheet_id)
         .doit()
         .await
     {
@@ -409,7 +402,7 @@ async fn rename_new_sheet(
             tracing::info!(
                 "Renamed copied sheet to \"{}\" in {}",
                 project.name,
-                project.spreadsheet_id
+                spreadsheet_id
             );
         }
         Err(e) => {

@@ -7,7 +7,7 @@ use crate::{
     update,
 };
 use anyhow::Error;
-use r#box::models::AccessToken;
+use r#box::{apis::configuration::Configuration, models::AccessToken};
 use google_sheets4::{
     Sheets, hyper_rustls::HttpsConnector, hyper_util::client::legacy::connect::HttpConnector,
 };
@@ -85,7 +85,9 @@ pub fn handle_prog_settings(state: &mut State, event: ProgramSettingsMessage) ->
         ProgramSettingsMessage::LoginBox(token_response) => match token_response {
             Ok(t) => {
                 state.box_token = Some(t.clone());
-                state.box_config.oauth_access_token = t.access_token;
+                let mut config = Configuration::new();
+                config.oauth_access_token = t.access_token;
+                state.required_data.box_conf = Some(config);
                 update(state, {
                     tracing::info!("Logged in Box successfully");
                     Message::None

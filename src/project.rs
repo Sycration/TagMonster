@@ -1,11 +1,12 @@
+use std::fmt::Debug;
+
 use serde::{Deserialize, Serialize};
+
+use crate::source::Source;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Project {
     pub name: String,
-    pub top_folder_id: usize,
-    pub box_url: String,
-    pub sheets_url: String,
-    pub spreadsheet_id: String,
-    pub sheet_id: i32,
+    pub source: Source,
+
 }

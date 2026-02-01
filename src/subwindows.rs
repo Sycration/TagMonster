@@ -11,6 +11,7 @@ pub(crate) enum Subwindow {
     NewProject,
     ProjectSettings,
     ProgramSettings,
+    Export
 }
 
 pub(crate) fn open_window(state: &mut State, sw: Subwindow) -> Task<Message> {
@@ -80,6 +81,23 @@ pub(crate) fn open_window(state: &mut State, sw: Subwindow) -> Task<Message> {
                 Task::none()
             }
         }
+        Subwindow::Export => {
+            if state.windows.iter().find(|x| x.1 == sw).is_none() {
+                let window = window::open(Settings {
+                    size: iced::Size {
+                        width: 600.0,
+                        height: 400.0,
+                    },
+                    level: window::Level::AlwaysOnTop,
+                    ..Default::default()
+                });
+                state.windows.push((window.0, sw));
+                tracing::debug!("Opened export window");
+                window.1
+            } else {
+                Task::none()
+            }
+        },
     };
     window.then(|id| {
         let icon = icon::from_file_data(include_bytes!("../icon.png"), Some(ImageFormat::Png));

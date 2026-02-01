@@ -55,16 +55,20 @@ pub(crate) fn top_bar(state: &State) -> widget::Row<'_, Message> {
         )
         .spacing(10),
         Space::new().width(Fill),
-        row((0..=(if state.project.is_some() { 1 } else { 0 }))
+        row((0..=(if state.project.is_some() { 2 } else { 0 }))
             .rev()
             .map(|i| {
                 if i == 0 {
                     widget::button("Program settings")
                         .on_press(Message::OpenWindow(Subwindow::ProgramSettings))
                         .into()
-                } else {
+                } else if i == 1 {
                     widget::button("Project options")
                         .on_press(Message::OpenWindow(Subwindow::ProjectSettings))
+                        .into()
+                } else {
+                    widget::button("Export data")
+                        .on_press(Message::OpenWindow(Subwindow::Export))
                         .into()
                 }
             }),)

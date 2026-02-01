@@ -62,7 +62,9 @@ use crate::persist::retrieve;
 use crate::persist::retrieve_sync;
 use crate::program_settings::ProgramSettingsState;
 use crate::project::Project;
+use crate::project_page::Node;
 use crate::screens::Screen;
+use crate::source::RequiredData;
 use crate::subwindows::Subwindow;
 
 mod box_login;
@@ -76,6 +78,8 @@ mod project_settings;
 mod screens;
 mod subwindows;
 mod top_bar;
+mod source;
+mod export;
 mod make_sheet;
 
 mod file_tree;
@@ -98,9 +102,10 @@ enum Message {
     HomepageMessage(homepage::HomepageMessage),
     NewProjMessage(project_page::NewProjEvent),
     FileTreeMessage(file_tree::FileTreeMessage),
+    ExportMessage(export::ExportEvent),
     #[debug("Can't")]
     ProgSetMessage(program_settings::ProgramSettingsMessage),
-    Select(Item),
+    Select(Node),
     CloseProj,
     PaneResized(pane_grid::ResizeEvent),
     PaneSwap(pane_grid::DragEvent),
@@ -123,14 +128,15 @@ struct State {
     statusline: Content,
     show_logs: bool,
     panes: pane_grid::State<Pane>,
-    selected: Option<Item>,
+    selected: Option<Node>,
     project: Option<project::Project>,
     new_proj_state: project_page::NewProjState,
     homepage_state: homepage::HomepageState,
     file_tree_state: file_tree::FileTreeState,
     program_set_state: program_settings::ProgramSettingsState,
+    export_state: export::ExportState,
     box_token: Option<AccessToken>,
-    box_config: Configuration,
+    required_data: RequiredData,
     #[debug(skip)]
     gapi_hub: Option<Sheets<HttpsConnector<HttpConnector>>>,
     log_receiver: Receiver<(String, tracing::Level)>,
@@ -166,9 +172,10 @@ impl State {
             file_tree_state: FileTreeState::default(),
             homepage_state: homepage::HomepageState::default(),
             program_set_state: ProgramSettingsState::default(),
+            export_state: export::ExportState::default(),
             selected: None,
             box_token: None,
-            box_config: Configuration::default(),
+            required_data: RequiredData::default(),
             gapi_hub: None,
             log_receiver: rx,
         }
@@ -271,7 +278,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
                         Ok(mut rd) => {
                             let mut projects = vec![];
                             while let Ok(Some(f)) = rd.next_entry().await {
-                                if let Ok(mut file) = tokio::fs::File::open(f.path()).await {
+                                if let Ok(mut file) = tokio::fs::File::open(f.path().join("project.json")).await {
                                     let mut contents = String::new();
                                     if file.read_to_string(&mut contents).await.is_ok() {
                                         match serde_json::from_str::<Project>(&contents) {
@@ -405,6 +412,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
                 Task::none()
             }
         },
+        Message::ExportMessage(export_event) => export::handle_export_event(state, export_event),
     }
 }
 
@@ -476,6 +484,7 @@ fn view(state: &State, window_id: window::Id) -> Element<Message> {
             Subwindow::ProjectSettings => project_settings::project_settings(state),
             Subwindow::ProgramSettings => program_settings::program_settings(state),
             Subwindow::NewProject => project_page::new_project_view(state),
+            Subwindow::Export => export::export_view(state),
         }
     } else {
         text(format!(
