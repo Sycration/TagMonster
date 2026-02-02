@@ -9,7 +9,7 @@ use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    BATCH_SIZE, CONFIG_DIR, Message, SheetsHub, State, TEMPLATE_ID, export::flatten_node, persist, project::Project, project_page::{InternalType, Node}, source::RequiredData
+    BATCH_SIZE, CONFIG_DIR, Message, SheetsHub, State, TEMPLATE_ID, export::{add_top_folder_node, flatten_node}, persist, project::Project, project_page::{InternalType, Node}, source::RequiredData
 };
 
 pub async fn make_sheet(req_data: &RequiredData, hub: Option<SheetsHub>, project: Project, entries: Vec<Node>, spreadsheet_id: &str) -> anyhow::Result<()> {
@@ -20,16 +20,7 @@ pub async fn make_sheet(req_data: &RequiredData, hub: Option<SheetsHub>, project
                 anyhow::bail!("Not logged in to Google API");
             };
 
-            let mut tree = project.source.get_info(req_data, project.source.get_top_folder_id(), InternalType::Folder).await?;
-            tree.child_counts = Some(Default::default());
-            for child in entries.iter() {
-                if child.file_type == InternalType::Folder {
-                    tree.child_counts.get_or_insert(Default::default()).folder_count += 1;
-                } else {
-                    tree.child_counts.get_or_insert(Default::default()).file_count += 1;
-                }
-            }
-            tree.children = Some(entries);
+            let tree = add_top_folder_node(req_data, &project, entries).await?;
             
             let mut flat: Vec<Node> = Vec::new();
             flatten_node(&tree, &mut flat);

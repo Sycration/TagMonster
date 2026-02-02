@@ -79,9 +79,11 @@ mod screens;
 mod subwindows;
 mod top_bar;
 mod source;
+mod box_source;
+mod local_source;
 mod export;
 mod make_sheet;
-
+mod make_csv;
 mod file_tree;
 mod project;
 
@@ -188,6 +190,7 @@ pub fn main() -> anyhow::Result<()> {
             std::env::set_var("RUST_LOG", "info");
         }
     }
+    // We can't use the program otherwise anyway so we can unwrap
     CryptoProvider::install_default(rustls::crypto::ring::default_provider()).unwrap();
     let (tx, rx) = tokio::sync::broadcast::channel::<(String, tracing::Level)>(2usize.pow(16));
     let log_guard = log::init_logging(tx)?;

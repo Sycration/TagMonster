@@ -7,12 +7,12 @@ use std::{
 };
 
 // use crate::make_sheet::create_folder_names;
-use crate::source;
 use crate::source::Source;
 use crate::{
     CONFIG_DIR, Message, Pane, SheetsHub, State, TEMPLATE_ID, file_tree, homepage, persist,
     project::Project, screens::Screen, subwindows::Subwindow, update,
 };
+use crate::{box_source, local_source::LocalSource, source};
 use r#box::{
     apis::{
         downloads_api::{GetFilesIdContentParams, get_files_id_content},
@@ -56,8 +56,8 @@ pub enum NewProjSource {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct NewProjState {
-    top_url: String,
-    sheets_url: String,
+    box_url: String,
+    local_path: PathBuf,
     source: NewProjSource,
 }
 
@@ -67,6 +67,7 @@ pub(crate) enum NewProjEvent {
     OpenProject(Project),
     SetBoxUrl(String),
     SetLocalFolder(PathBuf),
+    SelectLocalFolder,
     NewProjButton,
 }
 
@@ -106,7 +107,6 @@ pub(crate) fn close_project(state: &mut State) -> Task<Message> {
     Task::none()
 }
 
-
 pub(crate) fn new_project(state: &mut State, project: Project) -> Task<Message> {
     let name = project.name.clone();
     if let Err(e) = std::fs::create_dir_all(CONFIG_DIR.join("projects").join(&name)) {
@@ -124,7 +124,9 @@ pub(crate) fn new_project(state: &mut State, project: Project) -> Task<Message> 
             {
                 let project = project.clone();
                 let dir = CONFIG_DIR.join("projects");
-                async move { persist::persist(&project, &dir.join(project.name.as_str()), "project").await }
+                async move {
+                    persist::persist(&project, &dir.join(project.name.as_str()), "project").await
+                }
             },
             |_| Message::None,
         )
@@ -142,7 +144,6 @@ pub(crate) fn new_project(state: &mut State, project: Project) -> Task<Message> 
     go
 }
 
-
 pub(crate) fn open_project(state: &mut State, project: Project) -> Task<Message> {
     let name = project.name.clone();
     let id = project.source.get_top_folder_id().to_string();
@@ -158,22 +159,30 @@ pub(crate) fn open_project(state: &mut State, project: Project) -> Task<Message>
 pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Message> {
     match ev {
         NewProjEvent::SetBoxUrl(url) => {
-            state.new_proj_state.top_url = url;
+            state.new_proj_state.box_url = url;
             Task::none()
         }
-        NewProjEvent::NewProjButton => Task::perform(
-            {
-                let required_data = state.required_data.clone();
-                let url = state.new_proj_state.top_url.clone();
-                let data_source = state.new_proj_state.source.clone();
+        NewProjEvent::NewProjButton => {
+            let required_data = state.required_data.clone();
+            let box_url = state.new_proj_state.box_url.clone();
+            let local_path = state
+                .new_proj_state
+                .local_path
+                .to_string_lossy()
+                .to_string();
+            let data_source = state.new_proj_state.source.clone();
+            Task::perform(
                 async move {
                     let source = match data_source {
-                        NewProjSource::Local => {
-                            error!("Local source not yet implemented");
-                            anyhow::bail!("Local source not yet implemented")
-                        },
+                        NewProjSource::Local => source::Source::Local(
+                            LocalSource::new(&local_path, &required_data)
+                                .await
+                                .inspect_err(|e| {
+                                    error!("Failed to create local folder source: {}", e);
+                                })?,
+                        ),
                         NewProjSource::Box => source::Source::Box(
-                            source::BoxSource::new(&url, &required_data)
+                            box_source::BoxSource::new(&box_url, &required_data)
                                 .await
                                 .inspect_err(|e| {
                                     error!("Failed to create Box source: {}", e);
@@ -181,37 +190,49 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
                         ),
                     };
                     Ok(source)
-                }
-            },
-            |s: anyhow::Result<Source>| {
-                match s {
-                    Ok(source) => {
-                        let project = Project {
-                            name: source.name().to_string(),
-                            source,
-                        };
-                        Message::NewProj(project)
+                },
+                |s: anyhow::Result<Source>| {
+                    match s {
+                        Ok(source) => {
+                            let project = Project {
+                                name: source.name().to_string(),
+                                source,
+                            };
+                            Message::NewProj(project)
+                        }
+                        Err(_) => {
+                            // error already logged
+                            Message::None
+                        }
                     }
-                    Err(_) => {
-                        // error already logged
-                        Message::None
-                    }
-                }
-            },
-        ),
+                },
+            )
+        }
         NewProjEvent::OpenProject(project) => open_project(state, project),
         NewProjEvent::SetSource(new_proj_source) => {
             state.new_proj_state.source = new_proj_source;
             Task::none()
-        },
+        }
         NewProjEvent::SetLocalFolder(path_buf) => {
-            error!("Local source not yet implemented");
+            state.new_proj_state.local_path = path_buf;
             Task::none()
-        },
+        }
+        NewProjEvent::SelectLocalFolder => {
+            let dialog = rfd::AsyncFileDialog::new();
+            Task::perform(dialog.pick_folder(), |f| {
+                if let Some(handle) = f {
+                    info!("Selected local folder {}", handle.path().to_string_lossy());
+                    Message::NewProjMessage(NewProjEvent::SetLocalFolder(
+                        handle.path().to_path_buf(),
+                    ))
+                } else {
+                    error!("Unable to select local folder");
+                    Message::None
+                }
+            })
+        }
     }
 }
-
-
 
 pub(crate) fn new_project_view(state: &State) -> Element<Message> {
     let button_row = row![
@@ -231,30 +252,36 @@ pub(crate) fn new_project_view(state: &State) -> Element<Message> {
     .spacing(10);
 
     let input_section = match state.new_proj_state.source {
-       NewProjSource::Local => column![
-            text("Select a local folder:"),
-            TextInput::<Message>::new("", &state.new_proj_state.sheets_url).on_input(|u| {
-                match std::fs::canonicalize(&u) {
-                    Ok(p) => Message::NewProjMessage(NewProjEvent::SetLocalFolder(p)),
-                    Err(e) => {
-                        error!("Invalid local folder path: {}", e);
-                        Message::None
-                    }
-                }
-            }),
+        NewProjSource::Local => column![
+            text("Paste or select a local folder path:"),
+            row![
+                Button::new("Select")
+                    .on_press(Message::NewProjMessage(NewProjEvent::SelectLocalFolder)),
+                TextInput::<Message>::new("", &state.new_proj_state.local_path.to_string_lossy())
+                    .on_input(|u| {
+                        match std::fs::canonicalize(&u) {
+                            Ok(p) => Message::NewProjMessage(NewProjEvent::SetLocalFolder(p)),
+                            Err(e) => {
+                                error!("Invalid local folder path: {}", e);
+                                Message::None
+                            }
+                        }
+                    })
+            ],
+            Space::new().height(10)
         ]
         .spacing(10),
         NewProjSource::Box => column![
             text("Paste the Box folder URL:"),
             TextInput::new(
                 "https://app.box.com/folder/...",
-                &state.new_proj_state.top_url
+                &state.new_proj_state.box_url
             )
             .on_input(|u| Message::NewProjMessage(NewProjEvent::SetBoxUrl(u))),
             Space::new().height(10),
         ]
         .spacing(10)
-        .into()
+        .into(),
     };
 
     column![

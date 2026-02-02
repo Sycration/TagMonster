@@ -119,7 +119,6 @@ pub(crate) fn file_tree_handle(state: &mut State, event: FileTreeMessage) -> Tas
 
     match event {
         FileTreeMessage::InitFolder(id) => {
-            dbg!(&state);
             state.file_tree_state.parents.clear();
             state.file_tree_state.current_folder.id = id.to_string();
             open_folder_web(state, id)
