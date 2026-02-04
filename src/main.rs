@@ -488,6 +488,7 @@ fn view(state: &State, window_id: window::Id) -> Element<Message> {
             Subwindow::ProgramSettings => program_settings::program_settings(state),
             Subwindow::NewProject => project_page::new_project_view(state),
             Subwindow::Export => export::export_view(state),
+            Subwindow::DeleteProj => homepage::delete_view(state)
         }
     } else {
         text(format!(

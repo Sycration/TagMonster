@@ -11,18 +11,15 @@ pub(crate) enum Subwindow {
     NewProject,
     ProjectSettings,
     ProgramSettings,
-    Export
+    Export,
+    DeleteProj
 }
 
 pub(crate) fn open_window(state: &mut State, sw: Subwindow) -> Task<Message> {
     let window = match sw {
         Subwindow::Main => {
             if state.windows.iter().find(|x| x.1 == sw).is_none() {
-                let window = window::open(Settings {
-                    level: window::Level::AlwaysOnBottom,
-
-                    ..Default::default()
-                });
+                let window = window::open(Settings::default());
                 state.windows.push((window.0, sw));
                 tracing::debug!("Opened main window");
                 window.1
@@ -93,6 +90,23 @@ pub(crate) fn open_window(state: &mut State, sw: Subwindow) -> Task<Message> {
                 });
                 state.windows.push((window.0, sw));
                 tracing::debug!("Opened export window");
+                window.1
+            } else {
+                Task::none()
+            }
+        },
+        Subwindow::DeleteProj => {
+            if state.windows.iter().find(|x| x.1 == sw).is_none() {
+                let window = window::open(Settings {
+                    size: iced::Size {
+                        width: 600.0,
+                        height: 200.0,
+                    },
+                    level: window::Level::AlwaysOnTop,
+                    ..Default::default()
+                });
+                state.windows.push((window.0, sw));
+                tracing::debug!("Opened delete confirmation window");
                 window.1
             } else {
                 Task::none()

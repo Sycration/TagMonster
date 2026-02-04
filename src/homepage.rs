@@ -1,21 +1,26 @@
-use crate::{Message, State, project::Project, subwindows::Subwindow};
+use crate::{CONFIG_DIR, Message, State, project::Project, subwindows::Subwindow, update};
 use iced::{
     Alignment::Center,
-    Border,
+    Border, Element,
     Length::{self, Fill, FillPortion},
     Task, Theme,
     border::Radius,
-    widget::{self, Space, button, column, container, row, scrollable, span, text},
+    widget::{self, Button, Space, button, column, container, row, scrollable, span, text},
 };
+use tracing::{error, info};
 
 #[derive(Debug, Clone)]
 pub(crate) struct HomepageState {
     projects: Vec<Project>,
+    to_delete: Option<Project>,
 }
 
 impl Default for HomepageState {
     fn default() -> Self {
-        Self { projects: vec![] }
+        Self {
+            projects: vec![],
+            to_delete: None,
+        }
     }
 }
 
@@ -24,19 +29,77 @@ impl Default for HomepageState {
 pub(crate) enum HomepageMessage {
     AddProject(Project),
     InitProjects(Vec<Project>),
+    DeleteProjectButton(Project),
+    ConfirmDelete,
+    CancelDelete,
+    DeletionDone,
 }
 
 pub(crate) fn handle_homepage_message(state: &mut State, msg: HomepageMessage) -> Task<Message> {
     match msg {
         HomepageMessage::AddProject(proj) => {
             state.homepage_state.projects.push(proj);
+            Task::none()
         }
         HomepageMessage::InitProjects(projects) => {
             state.homepage_state.projects = projects;
+            Task::none()
+        }
+        HomepageMessage::DeleteProjectButton(project) => {
+            state.homepage_state.to_delete = Some(project.clone());
+            update(state, Message::OpenWindow(Subwindow::DeleteProj))
+        }
+        HomepageMessage::ConfirmDelete => if let Some(open_proj) = &state.project
+            && let Some(to_delete) = &state.homepage_state.to_delete
+            && open_proj.name == to_delete.name
+        {
+            update(state, Message::CloseProj)
+        } else {
+            Task::none()
+        }
+        .chain({
+            let proj = state.homepage_state.to_delete.clone();
+            Task::perform(
+                async move {
+                    if let Some(proj) = proj {
+                        let res =
+                            tokio::fs::remove_dir_all(CONFIG_DIR.join("projects").join(&proj.name))
+                                .await;
+                        if let Err(ref e) = res {
+                            error!("Failed to delete project {}: {}", &proj.name, e.to_string())
+                        } else {
+                            info!("Deleted project {}", proj.name)
+                        }
+                        res.is_ok()
+                    } else {
+                        false
+                    }
+                },
+                |success| {
+                    if success {
+                        Message::HomepageMessage(HomepageMessage::DeletionDone)
+                    } else {
+                        Message::None
+                    }
+                },
+            )
+        }),
+        HomepageMessage::CancelDelete => {
+            state.homepage_state.to_delete = None;
+            update(state, Message::CloseWindow(Subwindow::DeleteProj))
+        }
+        HomepageMessage::DeletionDone => {
+            if let Some(to_delete) = &state.homepage_state.to_delete {
+                state
+                    .homepage_state
+                    .projects
+                    .retain(|p| p.name != to_delete.name);
+            }
+            state.homepage_state.to_delete = None;
+
+            update(state, Message::CloseWindow(Subwindow::DeleteProj))
         }
     }
-
-    Task::none()
 }
 pub(crate) fn homepage<'a>(state: &'a State) -> widget::Container<'a, Message> {
     container(
@@ -89,11 +152,17 @@ pub(crate) fn homepage<'a>(state: &'a State) -> widget::Container<'a, Message> {
                         .projects
                         .iter()
                         .fold(column![], |col, proj| {
-                            col.push(
+                            col.push(row![
                                 button(proj.name.as_str())
                                     .on_press(Message::OpenProject(proj.clone()))
                                     .width(Fill),
-                            )
+                                Space::new().width(10),
+                                button("X").style(button::danger).on_press(
+                                    Message::HomepageMessage(HomepageMessage::DeleteProjectButton(
+                                        proj.clone()
+                                    ))
+                                )
+                            ])
                         },)
                         .align_x(Center)
                         .spacing(10)
@@ -134,4 +203,34 @@ pub(crate) fn homepage<'a>(state: &'a State) -> widget::Container<'a, Message> {
         .align_x(Center),
     )
     .center_x(Length::Fill)
+}
+
+pub fn delete_view(state: &State) -> Element<Message> {
+    column![
+        column![text(format!(
+            "Confirm deletion of project \"{}\"",
+            state
+                .homepage_state
+                .to_delete
+                .as_ref()
+                .map(|p| p.name.as_str())
+                .unwrap_or_else(|| "ERROR NO PROJECT SELECTED")
+        )),
+        text("THIS PERMANENTLY REMOVES THE PROJECT FROM THIS PROGRAM"),
+        text("Your actual data will not be touched.")].align_x(Center),
+        row![
+            button("Confirm Deletion")
+                .style(button::danger)
+                .on_press(Message::HomepageMessage(HomepageMessage::ConfirmDelete)),
+            Space::new().width(Fill),
+            button("Cancel")
+                .style(button::primary)
+                .on_press(Message::HomepageMessage(HomepageMessage::CancelDelete)),
+        ]
+        .spacing(10),
+    ]
+    .align_x(Center)
+    .padding(40)
+    .spacing(25)
+    .into()
 }
