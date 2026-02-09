@@ -13,20 +13,9 @@ pub(crate) fn top_bar(state: &State) -> widget::Row<'_, Message> {
             (0..=(if state.project.is_some() { 1 } else { 0 })).map(|i| {
                 if i == 0 {
                     widget::button("Home")
-                        .style(|theme: &Theme, _| {
-                            let palette = theme.extended_palette();
-
-                            button::Style {
-                                background: Some(Background::Color(
-                                    if state.screen == Screen::Home {
-                                        palette.primary.strong.color
-                                    } else {
-                                        palette.secondary.strong.color
-                                    },
-                                )),
-                                ..Default::default()
-                            }
-                        })
+                        .style(if state.screen == Screen::Home {
+                            button::primary 
+                        } else { button::secondary})
                         .on_press(Message::ChangeScreen(Screen::Home))
                         .into()
                 } else {
@@ -34,20 +23,9 @@ pub(crate) fn top_bar(state: &State) -> widget::Row<'_, Message> {
                         "Project: ",
                         state.project.as_ref().map_or("", |p| &p.name)
                     ])
-                    .style(|theme: &Theme, _| {
-                        let palette = theme.extended_palette();
-
-                        button::Style {
-                            background: Some(Background::Color(
-                                if state.screen == Screen::Project {
-                                    palette.primary.strong.color
-                                } else {
-                                    palette.secondary.strong.color
-                                },
-                            )),
-                            ..Default::default()
-                        }
-                    })
+                    .style(if state.screen == Screen::Project {
+                            button::primary 
+                        } else { button::secondary})
                     .on_press(Message::ChangeScreen(Screen::Project))
                     .into()
                 }

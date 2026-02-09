@@ -236,11 +236,8 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
 
 pub(crate) fn new_project_view(state: &State) -> Element<Message> {
     let button_row = row![
-        button("Local").on_press_maybe(
-            state
-                .box_token
-                .as_ref()
-                .map(|_| Message::NewProjMessage(NewProjEvent::SetSource(NewProjSource::Local)))
+        button("Local").on_press(
+            Message::NewProjMessage(NewProjEvent::SetSource(NewProjSource::Local))
         ),
         button("Box").on_press_maybe(
             state
