@@ -15,6 +15,7 @@ In the Program Settings window, you will need to sign in to both the Box and Goo
 ## Roadmap
 - [x] UI design
 - [x] Box API integration
+    - [ ] Shared links
 - [x] Google API integration
 - [x] Automated file type analysis
 - [x] Incomplete spreadsheet generation
