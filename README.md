@@ -23,7 +23,7 @@ In the Program Settings window, you will need to sign in to both the Box and Goo
     - [ ] Better file browser - Custom widget or [this library?](https://github.com/EmmanuelDodoo/modav_widgets)
 - [ ] Tagging and notes
 - [x] Internal file viewer
-- [ ] Local spreadsheet export
+- [x] Local spreadsheet export
 - [ ] Manual & documentation
 - [ ] Packaged and signed distribution
     - [ ] Windows
