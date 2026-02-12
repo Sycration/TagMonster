@@ -1,2 +1,7 @@
 [build]
 incremental = true
+
+
+[target.aarch64-apple-darwin]
+# linker = "/home/sycration/Code/TagMonster/zcc"
+rustflags = ["-Ctarget-cpu=apple-m1"]
