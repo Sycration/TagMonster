@@ -76,7 +76,7 @@ impl GuiLayer {
 }
 
 impl<S: Subscriber> Layer<S> for GuiLayer {
-    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let meta = event.metadata();
         let line = meta.line();
         let location = meta.file().map(|f| {

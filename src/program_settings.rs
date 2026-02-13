@@ -96,19 +96,19 @@ pub fn handle_prog_settings(state: &mut State, event: ProgramSettingsMessage) ->
             Err(e) => {
                 state.box_token = None;
                 tracing::error!("Error logging in Box: {}", e);
-                update(state, { Message::None })
+                update(state,  Message::None )
             }
         },
         ProgramSettingsMessage::LoginGoogle(r) => match r {
             Ok(s) => {
                 state.gapi_hub = Some(s);
                 tracing::info!("Logged in Google successfully");
-                update(state, { Message::None })
+                update(state, Message::None )
             }
             Err(e) => {
                 state.gapi_hub = None;
                 tracing::error!("Error logging in Google: {}", e);
-                update(state, { Message::None })
+                update(state,  Message::None )
             }
         },
         ProgramSettingsMessage::LoginGoogleButton => {

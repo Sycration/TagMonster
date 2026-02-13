@@ -32,6 +32,7 @@ pub async fn retrieve<T: Default + Serialize + for<'a> Deserialize<'a>>(
         .and_then(|json| serde_json::from_str::<T>(&json).map_err(anyhow::Error::from))
 }
 
+#[allow(unused)]
 pub fn retrieve_sync<T: Default + Serialize + for<'a> Deserialize<'a>>(
     config_dir: &Path,
     name: &str,

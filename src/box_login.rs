@@ -70,7 +70,7 @@ pub async fn get_key(id: String, secret: String, read_cache: bool) -> anyhow::Re
             let server = axum::serve(tokio::net::TcpListener::bind(addr).await?, app);
 
             // Start the server in a separate task
-            let server_handle = tokio::spawn(async move { server.await });
+            let _server_handle = tokio::spawn(async move { server.await });
 
             if let Err(e) = webbrowser::open(&oauth_url) {
                 error!("Failed to open browser: {}", e);

@@ -1,3 +1,7 @@
+#![allow(unused_imports)]
+#![allow(unused_import_braces)]
+#![allow(mismatched_lifetime_syntaxes)]
+
 use std::hash::Hash;
 use std::io::Read;
 use std::ops::Range;
@@ -214,7 +218,7 @@ pub fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn window_subscription(state: &State) -> Subscription<Message> {
+fn window_subscription(_state: &State) -> Subscription<Message> {
     window::events().map(|(id, ev)| match ev {
         window::Event::Closed => Message::CloseWinById(id),
         window::Event::CloseRequested => Message::CloseWinById(id),
@@ -262,7 +266,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::None => Task::none(),
         Message::Initialize => {
             let mut flist = pane_grid::State::new(Pane::FileList);
-            let viewer = flist
+            let _viewer = flist
                 .0
                 .split(pane_grid::Axis::Vertical, flist.1, Pane::Viewer)
                 .unwrap();
@@ -586,8 +590,7 @@ impl Highlight {
 fn highlight_line(line: &str) -> Vec<(Range<usize>, Highlight)> {
     let mut offset = 0;
     line.split(['\n'])
-        .enumerate()
-        .map(|(i, l)| {
+        .map(|l| {
             let start = offset;
             offset += l.len() + 1;
             let out = find_level(l);

@@ -37,7 +37,7 @@ impl LocalSource {
             .into_owned()
     }
 
-    pub async fn new(url: &str, req_data: &RequiredData) -> anyhow::Result<Self> {
+    pub async fn new(url: &str, _req_data: &RequiredData) -> anyhow::Result<Self> {
         let path = tokio::fs::canonicalize(url).await.inspect_err(|e| {
             error!("Failed to canonicalize path {url}: {}", e);
         })?;

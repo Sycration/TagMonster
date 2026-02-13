@@ -133,7 +133,7 @@ pub(crate) fn handle_export_event(state: &mut State, event: ExportEvent) -> Task
                                 .last()
                                 .unwrap_or_default()
                                 .parse();
-                            let (spreadsheet_id, sheet_id) = match (spreadsheet_id, sheet_id) {
+                            let (spreadsheet_id, _sheet_id) = match (spreadsheet_id, sheet_id) {
                                 (Some(sp), Ok(s)) => (sp.to_string(), s),
                                 (None, _) => {
                                     tracing::warn!(
@@ -145,7 +145,7 @@ pub(crate) fn handle_export_event(state: &mut State, event: ExportEvent) -> Task
                                         google_sheets_url
                                     );
                                 }
-                                (_, Err(e)) => {
+                                (_, Err(_)) => {
                                     tracing::warn!(
                                         "Invalid Spreadsheet URL (no sheet ID): {}",
                                         google_sheets_url

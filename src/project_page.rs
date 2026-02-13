@@ -64,6 +64,7 @@ pub(crate) struct NewProjState {
 #[derive(Debug, Clone)]
 pub(crate) enum NewProjEvent {
     SetSource(NewProjSource),
+    #[allow(unused)]
     OpenProject(Project),
     SetBoxUrl(String),
     SetLocalFolder(PathBuf),
@@ -305,7 +306,7 @@ pub(crate) fn new_project_view(state: &State) -> Element<Message> {
 
 pub(crate) fn project_page(state: &State) -> widget::Container<'_, Message> {
     container(
-        pane_grid(&state.panes, |pane, current_pane, _| {
+        pane_grid(&state.panes, |_pane, current_pane, _| {
             pane_grid::Content::new(
                 scrollable(
                     match current_pane {

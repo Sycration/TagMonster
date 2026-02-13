@@ -233,14 +233,11 @@ pub async fn create_filetype_tags(
 ) {
     match magic_db::load() {
         Ok(db) => {
-            let client = reqwest::Client::new();
             let safe_title = project.name.replace('\'', "''");
             let mut batch_values: Vec<Vec<serde_json::Value>> = Vec::new();
             let mut batch_start_row = 2;
 
             for (i, node) in flat.into_iter().enumerate().skip(1) {
-                let row = 2 + (i - 1);
-
                 let value = match node.file_type {
                     InternalType::Folder => serde_json::Value::Null,
                     InternalType::Link => serde_json::Value::String("Web link".to_string()),
@@ -316,8 +313,6 @@ pub async fn create_file_names(
     let mut batch_start_row = 2;
 
     for (i, node) in flat.into_iter().enumerate().skip(1) {
-        let row = 2 + (i - 1);
-
         let formula = match node.file_type {
             InternalType::File | InternalType::Link => {
                 let esc_name = node.name.replace('"', "\\\"");
