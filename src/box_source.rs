@@ -45,7 +45,6 @@ impl BoxSource {
         };
         let hostname = url.origin().ascii_serialization();
         let box_id = if url.path().contains("/s/") {
-            debug!("Shared link");
             if url.path().contains("/folder/") {
                 // it does contain a path
                 let path_segs = url.path_segments().unwrap().collect::<Vec<_>>();
@@ -79,12 +78,15 @@ impl BoxSource {
 
                 subfolder_id.to_string()
             } else {
+                share_id = url.path_segments().map(|s|s.last()).flatten().map(|s|s.to_string());
+
                 let folder = r#box::apis::shared_links_folders_api::get_shared_items_folders(
                     configuration,
                     GetSharedItemsFoldersParams {
                         boxapi: share_id
                             .as_ref()
-                            .map(|s| format!("shared_link={}/s/{s}", &hostname))
+                            .map(|s| dbg!(format!("shared_link={}/s/{s}", &hostname)))
+                            
                             .unwrap_or_default(),
                         if_none_match: None,
                         fields: None,
