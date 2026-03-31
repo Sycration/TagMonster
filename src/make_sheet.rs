@@ -51,6 +51,7 @@ pub async fn make_sheet(req_data: &RequiredData, hub: Option<SheetsHub>, project
                         create_filetype_tags(&project, hub.clone(), &req_data, &flat, &spreadsheet_id),
                         create_folder_names(&project, hub.clone(), &flat, &spreadsheet_id),
                         create_file_names(&project, hub.clone(), &flat, &spreadsheet_id),
+                        create_metadata_fields(&project, hub.clone(), &flat, &spreadsheet_id),
                     );
                     info!("Done making sheet");
                 }
@@ -345,6 +346,168 @@ pub async fn create_file_names(
                     tracing::info!("Wrote file links to {}:{}", batch_start_row, batch_end_row);
                 }
                 Err(e) => tracing::error!("Failed to write batch {}: {}", range, e),
+            }
+
+            batch_start_row += batch_values.len();
+            batch_values.clear();
+        }
+    }
+}
+
+fn column_letter(column: usize) -> String {
+    let mut value = column;
+    let mut result = String::new();
+
+    while value > 0 {
+        value -= 1;
+        let ch = (b'A' + (value % 26) as u8) as char;
+        result.insert(0, ch);
+        value /= 26;
+    }
+
+    result
+}
+
+fn get_metadata_value(project: &Project, node: &Node, field_name: &str) -> String {
+    project
+        .entered_data
+        .get(&node.id)
+        .and_then(|data| {
+            data.iter().find_map(|f| {
+                if f.name != field_name {
+                    None
+                } else {
+                    match &f.input_type {
+                        crate::metadata::InputType::TextEntry { text } => Some(text.clone()),
+                        crate::metadata::InputType::SingleSelect { options: _, which } => project
+                            .fields
+                            .iter()
+                            .find(|pf| pf.name == field_name)
+                            .and_then(|pf| {
+                                if let crate::metadata::InputType::SingleSelect {
+                                    options,
+                                    ..
+                                } = &pf.input_type && let Some(which) = *which
+                                {
+                                    options.get(which).cloned()
+                                } else {
+                                    None
+                                }
+                            }),
+                        crate::metadata::InputType::MultiSelect { which, .. } => project
+                                    .fields
+                                    .iter()
+                                    .find(|f| f.name == *field_name)
+                                    .and_then(|f| {
+                                        if let crate::metadata::InputType::MultiSelect {
+                                            options,
+                                            ..
+                                        } = &f.input_type
+                                        {
+                                            Some(options)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .map(|options| {
+                                        which
+                                            .iter()
+                                            .filter_map(|idx| options.get(*idx).cloned())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    }),
+                    }
+                }
+            })
+        })
+        .unwrap_or_default()
+}
+
+async fn create_metadata_fields(
+    project: &Project,
+    hub: google_sheets4::Sheets<
+        google_sheets4::hyper_rustls::HttpsConnector<
+            google_sheets4::hyper_util::client::legacy::connect::HttpConnector,
+        >,
+    >,
+    flat: &Vec<Node>,
+    spreadsheet_id: &str,
+) {
+    if project.fields.is_empty() {
+        return;
+    }
+
+    let safe_title = project.name.replace('\'', "''");
+    let metadata_fields: Vec<String> = project.fields.iter().map(|f| f.name.clone()).collect();
+    let start_col = 8; // H
+    let end_col = start_col + metadata_fields.len() - 1;
+    let end_col_label = column_letter(end_col);
+
+    let header_range = format!("'{}'!H1:{}1", safe_title, end_col_label);
+    let header_values: Vec<Vec<serde_json::Value>> = vec![metadata_fields
+        .iter()
+        .map(|name| serde_json::Value::String(name.clone()))
+        .collect()];
+
+    let header_vr = google_sheets4::api::ValueRange {
+        range: Some(header_range.clone()),
+        major_dimension: None,
+        values: Some(header_values),
+    };
+
+    match hub
+        .spreadsheets()
+        .values_update(header_vr, spreadsheet_id, &header_range)
+        .value_input_option("RAW")
+        .doit()
+        .await
+    {
+        Ok((_resp, _)) => {
+            tracing::info!("Wrote metadata headers to {}", header_range);
+        }
+        Err(e) => {
+            tracing::error!("Failed to write metadata header range {}: {}", header_range, e);
+        }
+    }
+
+    let mut batch_values: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut batch_start_row = 2;
+
+    for (i, node) in flat.into_iter().enumerate().skip(1) {
+        let row_values: Vec<serde_json::Value> = project
+            .fields
+            .iter()
+            .map(|field| {
+                serde_json::Value::String(get_metadata_value(project, node, &field.name))
+            })
+            .collect();
+
+        dbg!(&row_values);
+
+        batch_values.push(row_values);
+
+        if batch_values.len() >= BATCH_SIZE || i == flat.len() - 1 {
+            let batch_end_row = batch_start_row + batch_values.len() - 1;
+            let range = format!("'{}'!H{}:{}{}", safe_title, batch_start_row, end_col_label, batch_end_row);
+            let vr = google_sheets4::api::ValueRange {
+                range: Some(range.clone()),
+                major_dimension: None,
+                values: Some(batch_values.clone()),
+            };
+
+            match hub
+                .spreadsheets()
+                .values_update(vr, spreadsheet_id, &range)
+                .value_input_option("USER_ENTERED")
+                .doit()
+                .await
+            {
+                Ok((_r, _)) => {
+                    tracing::info!("Wrote metadata to {}:{}", batch_start_row, batch_end_row);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to write metadata batch {}: {}", range, e);
+                }
             }
 
             batch_start_row += batch_values.len();

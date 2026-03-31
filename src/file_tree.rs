@@ -15,7 +15,7 @@ use iced::{
     Task,
     advanced::{Widget, widget::Text},
     wgpu::hal::auxil::db,
-    widget::{Button, Column, Row, Space, button, column, row, text},
+    widget::{Button, Column, Container, Row, Space, Tooltip, button, column, row, text, tooltip},
 };
 use tracing::error;
 use tracing::info;
@@ -72,16 +72,26 @@ pub(crate) fn file_tree(state: &State) -> Element<Message> {
                     .on_press(Message::Select(x.clone())),
             };
 
+            let b = b.style(if let Some(selected) = &state.selected && x.id == selected.id {
+                button::warning
+            } else {
+                button::primary
+            });
+
+            // let tooltip = tooltip(b, column![Text::new(&x.link)], tooltip::Position::Right);
+
             acc.push(
                 Row::new()
                     .push(if x.file_type == InternalType::Folder {
-                        Some(Button::new("→").on_press(Message::FileTreeMessage(
+                        Some(Button::new("⮡").on_press(Message::FileTreeMessage(
                             FileTreeMessage::OpenFolder(x.id.clone()),
                         )))
                     } else {
                         None
                     })
                     .push(b)
+                    .push(Button::new("🌐").on_press(Message::OpenLink(x.link.clone())).style(button::secondary))
+                    .push(Space::new().width(Length::Fixed(0.0)))
                     .width(Length::Fill)
                     .spacing(5),
             )

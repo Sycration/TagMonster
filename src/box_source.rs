@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use chrono::{DateTime, Utc};
 use r#box::apis::{
     configuration::Configuration,
     downloads_api::{GetFilesIdContentParams, get_files_id_content},
@@ -182,6 +183,7 @@ impl BoxSource {
                     file_type: InternalType::File,
                     children: None,
                     child_counts: None,
+                    creation_date: file.created_at.as_deref().map(|dt| dt.parse::<DateTime<Utc>>().ok()),
                 })
             }
             InternalType::Folder => {
@@ -218,6 +220,7 @@ impl BoxSource {
                     file_type: InternalType::Folder,
                     children: None,
                     child_counts: None,
+                    creation_date: folder.created_at.flatten().map(|dt| dt.parse::<DateTime<Utc>>().ok()),
                 })
             }
             InternalType::Link => {
@@ -248,6 +251,7 @@ impl BoxSource {
                     file_type: InternalType::Link,
                     children: None,
                     child_counts: None,
+                    creation_date: None, // Web links don't have creation dates in the API
                 })
             }
         }
@@ -314,23 +318,24 @@ impl BoxSource {
         for entry in entries.into_iter() {
             match entry {
                 r#box::models::Item::FileFull(f) => {
-                    nodes.push(Node {
-                        name: f.name.unwrap_or_else(|| "UNNAMED FILE".to_string()),
-                        link: format!(
-                            "{}{}/file/{}",
-                            self.hostname.trim_end_matches('/'),
-                            self.share_id
-                                .as_ref()
-                                .map(|s| format!("/s/{s}"))
-                                .unwrap_or_default(),
-                            &f.id
-                        ),
-                        id: f.id,
-                        idx: file_idx,
-                        file_type: InternalType::File,
-                        children: None,
-                        child_counts: None,
-                    });
+                     nodes.push(Node {
+                         name: f.name.unwrap_or_else(|| "UNNAMED FILE".to_string()),
+                         link: format!(
+                             "{}{}/file/{}",
+                             self.hostname.trim_end_matches('/'),
+                             self.share_id
+                                 .as_ref()
+                                 .map(|s| format!("/s/{s}"))
+                                 .unwrap_or_default(),
+                             &f.id
+                         ),
+                         id: f.id,
+                         idx: file_idx,
+                         file_type: InternalType::File,
+                         children: None,
+                         child_counts: None,
+                         creation_date: f.created_at.map(|dt| dt.parse::<DateTime<Utc>>().ok()),
+                     });
                     file_idx += 1;
                 }
                 r#box::models::Item::FolderMini(f) => {
@@ -372,43 +377,45 @@ impl BoxSource {
                         )
                     };
 
-                    nodes.push(Node {
-                        name: f.name.unwrap_or_else(|| "UNNAMED FOLDER".to_string()),
-                        link: format!(
-                            "{}{}/folder/{}",
-                            self.hostname.trim_end_matches('/'),
-                            self.share_id
-                                .as_ref()
-                                .map(|s| format!("/s/{s}"))
-                                .unwrap_or_default(),
-                            &f.id
-                        ),
-                        id: f.id,
-                        idx: folder_idx,
-                        file_type: InternalType::Folder,
-                        children: children,
-                        child_counts,
-                    });
+                     nodes.push(Node {
+                         name: f.name.unwrap_or_else(|| "UNNAMED FOLDER".to_string()),
+                         link: format!(
+                             "{}{}/folder/{}",
+                             self.hostname.trim_end_matches('/'),
+                             self.share_id
+                                 .as_ref()
+                                 .map(|s| format!("/s/{s}"))
+                                 .unwrap_or_default(),
+                             &f.id
+                         ),
+                         id: f.id,
+                         idx: folder_idx,
+                         file_type: InternalType::Folder,
+                         children: children,
+                         child_counts,
+                         creation_date: None, // FolderMini doesn't have creation_date
+                     });
                     folder_idx += 1;
                 }
                 r#box::models::Item::WebLink(f) => {
-                    nodes.push(Node {
-                        name: f.name.unwrap_or_else(|| "UNNAMED LINK".to_string()),
-                        link: format!(
-                            "{}{}/web_link/{}",
-                            self.hostname.trim_end_matches('/'),
-                            self.share_id
-                                .as_ref()
-                                .map(|s| format!("/s/{s}"))
-                                .unwrap_or_default(),
-                            &f.id
-                        ),
-                        id: f.id,
-                        idx: file_idx,
-                        file_type: InternalType::Link,
-                        children: None,
-                        child_counts: None,
-                    });
+                     nodes.push(Node {
+                         name: f.name.unwrap_or_else(|| "UNNAMED LINK".to_string()),
+                         link: format!(
+                             "{}{}/web_link/{}",
+                             self.hostname.trim_end_matches('/'),
+                             self.share_id
+                                 .as_ref()
+                                 .map(|s| format!("/s/{s}"))
+                                 .unwrap_or_default(),
+                             &f.id
+                         ),
+                         id: f.id,
+                         idx: file_idx,
+                         file_type: InternalType::Link,
+                         children: None,
+                         child_counts: None,
+                         creation_date: None, // Web links don't have creation dates
+                     });
                     file_idx += 1;
                 }
             };

@@ -62,6 +62,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::file_tree::FileTreeState;
+use crate::metadata::metadata_handle;
 use crate::persist::retrieve;
 use crate::persist::retrieve_sync;
 use crate::program_settings::ProgramSettingsState;
@@ -90,6 +91,7 @@ mod make_sheet;
 mod make_csv;
 mod file_tree;
 mod project;
+mod metadata;
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -111,6 +113,7 @@ enum Message {
     ExportMessage(export::ExportEvent),
     #[debug("Can't")]
     ProgSetMessage(program_settings::ProgramSettingsMessage),
+    MetadataMessage(metadata::MetadataMessage),
     Select(Node),
     CloseProj,
     PaneResized(pane_grid::ResizeEvent),
@@ -124,7 +127,6 @@ enum Message {
 enum Pane {
     FileList,
     DataEntry,
-    Viewer,
 }
 
 #[derive(Debug)]
@@ -149,6 +151,7 @@ struct State {
 }
 
 pub static TEMPLATE_ID: &str = "1q_tfznc0LUGesvm2Yb5EqUCdhhpimJFLUkrZZJ8XvWY";
+
 pub const BATCH_SIZE: usize = 100; 
 pub type SheetsHub = google_sheets4::Sheets<
         google_sheets4::hyper_rustls::HttpsConnector<
@@ -164,6 +167,8 @@ static CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let _ = std::fs::create_dir_all(&cd.join("projects"));
     cd
 });
+
+pub const DEFAULT_JSON: &str = include_str!("default-fields.json");
 
 impl State {
     fn new(rx: Receiver<(String, tracing::Level)>) -> Self {
@@ -268,12 +273,9 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
             let mut flist = pane_grid::State::new(Pane::FileList);
             let _viewer = flist
                 .0
-                .split(pane_grid::Axis::Vertical, flist.1, Pane::Viewer)
+                .split(pane_grid::Axis::Vertical, flist.1, Pane::DataEntry)
                 .unwrap();
-            flist
-                .0
-                .split(pane_grid::Axis::Horizontal, flist.1, Pane::DataEntry)
-                .unwrap();
+
 
             state.panes = flist.0;
 
@@ -420,6 +422,7 @@ pub(crate) fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         },
         Message::ExportMessage(export_event) => export::handle_export_event(state, export_event),
+        Message::MetadataMessage(msg) => metadata_handle(state, msg)
     }
 }
 

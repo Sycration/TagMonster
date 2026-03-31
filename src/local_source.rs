@@ -6,6 +6,7 @@ use std::{
     pin::Pin,
 };
 
+use chrono::{DateTime, Utc};
 use r#box::apis::{
     configuration::Configuration,
     downloads_api::{GetFilesIdContentParams, get_files_id_content},
@@ -68,21 +69,27 @@ impl LocalSource {
                     }
                 };
 
-                Ok(Node {
-                    name: PathBuf::from(item_id)
-                        .file_name()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("Failed to extract file name from path: {}", item_id)
-                        })?
-                        .to_string_lossy()
-                        .into_owned(),
-                    link: link,
-                    id: item_id.to_string(),
-                    idx: 0,
-                    file_type: InternalType::File,
-                    children: None,
-                    child_counts: None,
-                })
+                 let metadata = tokio::fs::metadata(item_id).await.inspect_err(|e| {
+                     error!("Failed to get metadata for file {}: {}", item_id, e);
+                 })?;
+                 let creation_date = metadata.created().ok().map(|time| time.into());
+                 
+                 Ok(Node {
+                     name: PathBuf::from(item_id)
+                         .file_name()
+                         .ok_or_else(|| {
+                             anyhow::anyhow!("Failed to extract file name from path: {}", item_id)
+                         })?
+                         .to_string_lossy()
+                         .into_owned(),
+                     link: link,
+                     id: item_id.to_string(),
+                     idx: 0,
+                     file_type: InternalType::File,
+                     children: None,
+                     child_counts: None,
+                     creation_date: Some(creation_date),
+                 })
             }
             InternalType::Folder => {
                 let link = match url::Url::from_directory_path(item_id).map(|u| u.to_string()) {
@@ -114,27 +121,33 @@ impl LocalSource {
                     }
                 }
 
-                Ok(Node {
-                    name: PathBuf::from(item_id)
-                        .file_name()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Failed to extract directory name from path: {}",
-                                item_id
-                            )
-                        })?
-                        .to_string_lossy()
-                        .into_owned(),
-                    link: link,
-                    id: item_id.to_string(),
-                    idx: 0,
-                    file_type: InternalType::Folder,
-                    children: None,
-                    child_counts: Some(ChildCounts {
-                        folder_count,
-                        file_count,
-                    }),
-                })
+                 let metadata = tokio::fs::metadata(item_id).await.inspect_err(|e| {
+                     error!("Failed to get metadata for directory {}: {}", item_id, e);
+                 })?;
+                 let creation_date = metadata.created().ok().map(|time| time.into());
+                 
+                 Ok(Node {
+                     name: PathBuf::from(item_id)
+                         .file_name()
+                         .ok_or_else(|| {
+                             anyhow::anyhow!(
+                                 "Failed to extract directory name from path: {}",
+                                 item_id
+                             )
+                         })?
+                         .to_string_lossy()
+                         .into_owned(),
+                     link: link,
+                     id: item_id.to_string(),
+                     idx: 0,
+                     file_type: InternalType::Folder,
+                     children: None,
+                     child_counts: Some(ChildCounts {
+                         folder_count,
+                         file_count,
+                     }),
+                     creation_date: Some(creation_date),
+                 })
             }
             _ => {
                 error!("It should be impossible to have a web link stored on the local filesystem");
@@ -190,20 +203,26 @@ impl LocalSource {
         for entry in entries.into_iter() {
             // we know it's either a file or folder from above, so unwrap is safe
             if entry.metadata().await.unwrap().is_file() {
-                nodes.push(Node {
-                    name: entry.file_name().to_string_lossy().into_owned(),
-                    link: url::Url::from_file_path(entry.path())
-                        .map(|u| u.to_string())
-                        .unwrap_or_else(|_| {
-                            warn!("Failed to create file URL for {:?}", entry.path());
-                            "file://INVALID_PATH".to_string()
-                        }),
-                    id: entry.path().to_string_lossy().into_owned(),
-                    idx: file_idx,
-                    file_type: InternalType::File,
-                    children: None,
-                    child_counts: None,
-                });
+                 let metadata = entry.metadata().await.inspect_err(|e| {
+                     error!("Failed to get metadata for file {:?}: {}", entry.path(), e);
+                 })?;
+                 let creation_date = metadata.created().ok().map(|time| time.into());
+                 
+                 nodes.push(Node {
+                     name: entry.file_name().to_string_lossy().into_owned(),
+                     link: url::Url::from_file_path(entry.path())
+                         .map(|u| u.to_string())
+                         .unwrap_or_else(|_| {
+                             warn!("Failed to create file URL for {:?}", entry.path());
+                             "file://INVALID_PATH".to_string()
+                         }),
+                     id: entry.path().to_string_lossy().into_owned(),
+                     idx: file_idx,
+                     file_type: InternalType::File,
+                     children: None,
+                     child_counts: None,
+                     creation_date: Some(creation_date),
+                 });
                 file_idx += 1;
             } else {
                 // is folder
@@ -248,20 +267,26 @@ impl LocalSource {
                     )
                 };
 
-                nodes.push(Node {
-                    name: entry.file_name().to_string_lossy().into_owned(),
-                    link: url::Url::from_directory_path(entry.path())
-                        .map(|u| u.to_string())
-                        .unwrap_or_else(|_| {
-                            warn!("Failed to create directory URL for {:?}", entry.path());
-                            "file://INVALID_PATH".to_string()
-                        }),
-                    id: entry.path().to_string_lossy().into_owned(),
-                    idx: folder_idx,
-                    file_type: InternalType::Folder,
-                    children: children,
-                    child_counts,
-                });
+                 let metadata = entry.metadata().await.inspect_err(|e| {
+                     error!("Failed to get metadata for directory {:?}: {}", entry.path(), e);
+                 })?;
+                 let creation_date = metadata.created().ok().map(|time| time.into());
+                 
+                 nodes.push(Node {
+                     name: entry.file_name().to_string_lossy().into_owned(),
+                     link: url::Url::from_directory_path(entry.path())
+                         .map(|u| u.to_string())
+                         .unwrap_or_else(|_| {
+                             warn!("Failed to create directory URL for {:?}", entry.path());
+                             "file://INVALID_PATH".to_string()
+                         }),
+                     id: entry.path().to_string_lossy().into_owned(),
+                     idx: folder_idx,
+                     file_type: InternalType::Folder,
+                     children: children,
+                     child_counts,
+                     creation_date: Some(creation_date),
+                 });
                 folder_idx += 1;
             }
         }

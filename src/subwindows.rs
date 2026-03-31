@@ -66,7 +66,7 @@ pub(crate) fn open_window(state: &mut State, sw: Subwindow) -> Task<Message> {
                 let window = window::open(Settings {
                     size: iced::Size {
                         width: 600.0,
-                        height: 400.0,
+                        height: 425.0,
                     },
                     level: window::Level::AlwaysOnTop,
                     ..Default::default()

@@ -276,6 +276,7 @@ pub fn flatten_node(node: &Node, out: &mut Vec<Node>) {
         link: node.link.clone(),
         children: None,
         child_counts: node.child_counts,
+        creation_date: node.creation_date,
     });
 
     if let Some(children) = &node.children {
@@ -305,6 +306,7 @@ pub fn flatten_node(node: &Node, out: &mut Vec<Node>) {
                 file_type: file.file_type,
                 children: None,
                 child_counts: None,
+                creation_date: file.creation_date,
             });
         }
     }

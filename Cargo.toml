@@ -33,6 +33,8 @@ magic-db = "0.4.1"
 pure-magic = "0.2.1"
 csv-async = {version = "1.3.1", features = ["tokio"]}
 url = "2.5.8"
+chrono = { version = "0.4", features = ["serde"] }
+serde_with = "3.0.0"
 
 [patch.crates-io]
 aws-lc-rs = { git = "https://github.com/justsmth/aws-lc-rs", branch = "fix-cross-compilation"}

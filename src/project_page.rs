@@ -1,18 +1,17 @@
+use chrono::{DateTime, Utc};
+use serde_with::TimestampSeconds;
 use std::{
-    env::current_dir,
-    io::{BufReader, Cursor},
-    path::PathBuf,
-    process::Child,
-    usize,
+    collections::HashMap, env::current_dir, io::{BufReader, Cursor}, path::PathBuf, process::Child, usize
 };
 
 // use crate::make_sheet::create_folder_names;
-use crate::source::Source;
 use crate::{
     CONFIG_DIR, Message, Pane, SheetsHub, State, TEMPLATE_ID, file_tree, homepage, persist,
     project::Project, screens::Screen, subwindows::Subwindow, update,
 };
+use crate::{DEFAULT_JSON, metadata::InputField, source::Source};
 use crate::{box_source, local_source::LocalSource, source};
+use crate::metadata::{self, metadata_page};
 use r#box::{
     apis::{
         downloads_api::{GetFilesIdContentParams, get_files_id_content},
@@ -28,7 +27,7 @@ use google_sheets4::{
     api::{BatchUpdateSpreadsheetRequest, Spreadsheet},
 };
 use iced::{
-    Alignment::Center,
+    Alignment::{self, Center},
     Border, Element,
     Length::{self, Fill},
     Task, Theme,
@@ -59,6 +58,7 @@ pub(crate) struct NewProjState {
     box_url: String,
     local_path: PathBuf,
     source: NewProjSource,
+    fields: Option<Vec<InputField>>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +68,7 @@ pub(crate) enum NewProjEvent {
     OpenProject(Project),
     SetBoxUrl(String),
     SetLocalFolder(PathBuf),
+    SetFields(String),
     SelectLocalFolder,
     NewProjButton,
 }
@@ -81,6 +82,11 @@ pub struct Node {
     pub link: String,
     pub children: Option<Vec<Node>>,
     pub child_counts: Option<ChildCounts>,
+    #[serde(
+        with = "::serde_with::rust::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub creation_date: Option<Option<DateTime<Utc>>>, // Option<Option> to handle both None and Some(None) cases
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, Default)]
@@ -166,6 +172,10 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
         NewProjEvent::NewProjButton => {
             let required_data = state.required_data.clone();
             let box_url = state.new_proj_state.box_url.clone();
+            let fields = state.new_proj_state.fields.clone();
+            if fields.is_none() {
+                error!("No fields list selected");
+            }
             let local_path = state
                 .new_proj_state
                 .local_path
@@ -193,15 +203,17 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
                     Ok(source)
                 },
                 |s: anyhow::Result<Source>| {
-                    match s {
-                        Ok(source) => {
+                    match (s, fields) {
+                        (Ok(source), Some(fields)) => {
                             let project = Project {
                                 name: source.name().to_string(),
+                                fields,
                                 source,
+                                entered_data: HashMap::new(),
                             };
                             Message::NewProj(project)
                         }
-                        Err(_) => {
+                        (_, _) => {
                             // error already logged
                             Message::None
                         }
@@ -232,14 +244,30 @@ pub(crate) fn handle_new_proj_ev(state: &mut State, ev: NewProjEvent) -> Task<Me
                 }
             })
         }
+        NewProjEvent::SetFields(json) => match serde_json::from_str::<Vec<InputField>>(&json) {
+            Ok(f) => {
+                debug!(
+                    "Selected fields {}",
+                    &f.iter()
+                        .map(|t| &t.name)
+                        .fold("".to_string(), |acc, x| { format!("{acc}, {x}") })
+                );
+                state.new_proj_state.fields = Some(f);
+                Task::none()
+            }
+            Err(e) => {
+                error!("Invalid field JSON data: {e}");
+                Task::none()
+            }
+        },
     }
 }
 
 pub(crate) fn new_project_view(state: &State) -> Element<Message> {
     let button_row = row![
-        button("Local").on_press(
-            Message::NewProjMessage(NewProjEvent::SetSource(NewProjSource::Local))
-        ),
+        button("Local").on_press(Message::NewProjMessage(NewProjEvent::SetSource(
+            NewProjSource::Local
+        ))),
         button("Box").on_press_maybe(
             state
                 .box_token
@@ -282,15 +310,40 @@ pub(crate) fn new_project_view(state: &State) -> Element<Message> {
         .into(),
     };
 
+    let fields_section = column![
+        text("Please select a set of data fields"),
+        row![
+            button("Default").on_press(Message::NewProjMessage(NewProjEvent::SetFields(
+                DEFAULT_JSON.to_string()
+            ))),
+            button("Select").on_press_maybe(None),
+        ]
+        .spacing(10)
+    ]
+    .align_x(Alignment::Center)
+    .spacing(10);
+
     column![
         text("Create a new project"),
         button_row,
         input_section,
+        fields_section,
         row![
             Space::new().width(Fill),
-            button("Create")
-                .style(button::primary)
-                .on_press(Message::NewProjMessage(NewProjEvent::NewProjButton)),
+            button("Create").style(button::primary).on_press_maybe(
+                if (!state.new_proj_state.box_url.is_empty()
+                    || state
+                        .new_proj_state
+                        .local_path
+                        .to_str()
+                        .map_or_else(|| false, |p| !p.is_empty()))
+                    && state.new_proj_state.fields.is_some()
+                {
+                    Some(Message::NewProjMessage(NewProjEvent::NewProjButton))
+                } else {
+                    None
+                }
+            ),
             button("Cancel")
                 .style(button::secondary)
                 .on_press(Message::CloseWindow(Subwindow::NewProject)),
@@ -311,8 +364,7 @@ pub(crate) fn project_page(state: &State) -> widget::Container<'_, Message> {
                 scrollable(
                     match current_pane {
                         Pane::FileList => container(file_tree::file_tree(&state)),
-                        Pane::DataEntry => container("Data Entry"),
-                        Pane::Viewer => container("Viewer"),
+                        Pane::DataEntry => container(metadata::metadata_page(&state)),
                     }
                     .padding(8),
                 )
@@ -335,7 +387,6 @@ pub(crate) fn project_page(state: &State) -> widget::Container<'_, Message> {
                 pane_grid::TitleBar::new(widget::stack![match current_pane {
                     Pane::FileList => container(file_tree::title_bar(&state)),
                     Pane::DataEntry => container("Metadata"),
-                    Pane::Viewer => container("Viewer"),
                 },])
                 .style(|theme: &Theme| {
                     let palette = theme.extended_palette();

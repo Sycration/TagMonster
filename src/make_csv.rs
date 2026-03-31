@@ -1,6 +1,9 @@
 use anyhow::Ok;
 use axum::extract::path;
-use tokio::{fs::File, io::{AsyncWriteExt, BufWriter}};
+use tokio::{
+    fs::File,
+    io::{AsyncWriteExt, BufWriter},
+};
 
 use crate::{
     CONFIG_DIR,
@@ -30,11 +33,25 @@ pub async fn make_csv(
 
     let mut writer = csv_async::AsyncWriter::from_writer(&mut file);
 
-
     let db = magic_db::load()?;
 
     // writer.write_all(b"").await?;
-    writer.write_record(["counts","loose marker","folder name","file name","URL","file type tag"]).await?;
+    let mut headers = vec![
+        "counts",
+        "loose marker",
+        "folder name",
+        "file name",
+        "URL",
+        "file type tag",
+    ];
+    let metadata_fields = project
+        .fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    headers.extend(metadata_fields.iter().map(|s| s.as_str()));
+
+    writer.write_record(&headers).await?;
 
     for node in flat.iter() {
         let counts = if let Some(counts) = &node.child_counts {
@@ -65,7 +82,8 @@ pub async fn make_csv(
             InternalType::File => project
                 .source
                 .get_file_type(req_data, &node, &db)
-                .await.unwrap_or_else(|e|{
+                .await
+                .unwrap_or_else(|e| {
                     tracing::warn!("Error getting file type for {}: {}", node.name, e);
                     "Unknown".to_string()
                 }),
@@ -73,14 +91,75 @@ pub async fn make_csv(
             InternalType::Link => "Web link".to_string(),
         };
 
-        writer.write_record([
-            &counts,
-            loose_marker,
-            folder_name,
-            file_name,
-            url,
-            &file_type_tag,
-        ]).await?;
+        let mut record = vec![
+            counts.clone(),
+            loose_marker.to_string(),
+            folder_name.to_string(),
+            file_name.to_string(),
+            url.to_string(),
+            file_type_tag.clone(),
+        ];
+
+        // Add metadata fields in the same order as the headers
+        for field_name in metadata_fields.iter() {
+            let value = project.entered_data.get(&node.id).and_then(|data| {
+                data.iter().find_map(|f| {
+                    if f.name == *field_name {
+                        match &f.input_type {
+                            crate::metadata::InputType::TextEntry { text } => Some(text.clone()),
+                            crate::metadata::InputType::SingleSelect { options: _, which } => {
+                                project
+                                    .fields
+                                    .iter()
+                                    .find(|f| f.name == *field_name)
+                                    .and_then(|f| {
+                                        if let crate::metadata::InputType::SingleSelect {
+                                            options,
+                                            ..
+                                        } = &f.input_type && let Some(which) = *which
+                                        {
+                                            options.get(which).cloned()
+                                        } else {
+                                            None
+                                        }
+                                    })
+                            }
+                            crate::metadata::InputType::MultiSelect { which, .. } => {
+                                project
+                                    .fields
+                                    .iter()
+                                    .find(|f| f.name == *field_name)
+                                    .and_then(|f| {
+                                        if let crate::metadata::InputType::MultiSelect {
+                                            options,
+                                            ..
+                                        } = &f.input_type
+                                        {
+                                            Some(options)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .map(|options| {
+                                        which
+                                            .iter()
+                                            .filter_map(|idx| options.get(*idx).cloned())
+                                            .collect::<Vec<_>>()
+                                            .join("; ")
+                                    })
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                })
+            });
+            record.push(value.unwrap_or_default())
+        }
+
+        writer
+            .write_record(record)
+            .await?;
 
         tracing::debug!(
             "Wrote CSV record: {}, {}, {}, {}, {}, {}",
@@ -92,14 +171,10 @@ pub async fn make_csv(
             file_type_tag
         );
     }
-        
 
     writer.flush().await?;
 
-        tracing::info!(
-        "Done writing data to {}",
-        path
-    );
+    tracing::info!("Done writing data to {}", path);
 
     Ok(())
 }
