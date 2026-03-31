@@ -47,7 +47,7 @@
   {
     "name": "Theme Tag",
     "input_type": {
-      "SingleSelect": {
+      "MultiSelect": {
         "options": [
           "Women/Femmes",
           "BIPOC/POC",
@@ -62,14 +62,14 @@
           "Men/Masculinities",
           "intersex"
         ],
-        "which": null
+        "which": []
       }
     }
   },
   {
     "name": "Org Tag",
     "input_type": {
-      "MultiSelect": {
+      "SingleSelect": {
         "options": [
           "Community Made Resource",
           "Campus Resource, Center, Organization",
@@ -94,7 +94,7 @@
           "Flyer (physical)",
           "N/A"
         ],
-        "which": []
+        "which": null
       }
     }
   },
